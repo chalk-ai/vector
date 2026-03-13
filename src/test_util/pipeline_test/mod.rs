@@ -81,7 +81,27 @@ impl PipelineTest {
             };
         };
 
-        // 3. Send test events via all generators.
+        // 3. Wait for each source to be ready, then send test events via all generators.
+        //    Sources bind their ports asynchronously after topology start; connecting before
+        //    the port is open causes a panic in send_lines. A 5-second timeout surfaces
+        //    misconfigured addresses quickly rather than hanging indefinitely.
+        for generator in &self.generators {
+            if tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::test_util::wait_for_tcp(generator.target_address()),
+            )
+            .await
+            .is_err()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(5), topology.stop()).await;
+                return UnitTestResult {
+                    errors: vec![format!(
+                        "source at {} did not start within 5s",
+                        generator.target_address()
+                    )],
+                };
+            }
+        }
         for generator in &self.generators {
             if let Err(e) = generator.send().await {
                 // Best-effort cleanup before returning the error.
