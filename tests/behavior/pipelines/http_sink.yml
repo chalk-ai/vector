@@ -8,6 +8,8 @@ sources:
     type: socket
     mode: tcp
     address: "127.0.0.1:19100"
+    decoding:
+      codec: json
 
 transforms:
   parse:

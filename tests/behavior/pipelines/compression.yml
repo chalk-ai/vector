@@ -8,6 +8,8 @@ sources:
     type: socket
     mode: tcp
     address: "127.0.0.1:19120"
+    decoding:
+      codec: json
 
 sinks:
   http_out:

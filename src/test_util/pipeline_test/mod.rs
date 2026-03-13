@@ -92,9 +92,11 @@ impl PipelineTest {
             }
         }
 
-        // 4. Wait for sources to finish draining, then shut down the topology.
+        // 4. Stop the topology — sources receive a shutdown signal, the pipeline drains,
+        //    and sinks flush all buffered events.
         //    A 30-second timeout prevents a stuck sink from deadlocking the test suite.
-        topology.sources_finished().await;
+        //    Note: sources_finished() is NOT used here because real sources (e.g. TCP listeners)
+        //    never self-terminate — they only stop when explicitly signalled via stop().
         let _ = tokio::time::timeout(Duration::from_secs(30), topology.stop()).await;
 
         // 5. Collect events from all listeners.
