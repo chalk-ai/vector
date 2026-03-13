@@ -1,0 +1,78 @@
+# Pipeline integration test: route transform with two sinks
+#
+# Tests that the route transform correctly fans out events to multiple HTTP sinks
+# based on field conditions.
+
+sources:
+  socket:
+    type: socket
+    mode: tcp
+    address: "127.0.0.1:19110"
+
+transforms:
+  route:
+    inputs: ["socket"]
+    type: route
+    route:
+      errors: '.level == "error"'
+      info: '.level == "info"'
+
+sinks:
+  errors_out:
+    inputs: ["route.errors"]
+    type: http
+    encoding:
+      codec: json
+    uri: "http://127.0.0.1:19111/"
+    batch:
+      timeout_secs: 1
+
+  info_out:
+    inputs: ["route.info"]
+    type: http
+    encoding:
+      codec: json
+    uri: "http://127.0.0.1:19112/"
+    batch:
+      timeout_secs: 1
+
+tests:
+  - name: "routes events to correct sinks"
+    generators:
+      gen:
+        type: socket
+        address: "127.0.0.1:19110"
+        events:
+          - source: '{ "message": "all good", "level": "info" }'
+          - source: '{ "message": "something broke", "level": "error" }'
+          - source: '{ "message": "another info", "level": "info" }'
+
+    listeners:
+      errors:
+        type: http
+        address: "127.0.0.1:19111"
+        decoding:
+          codec: json
+
+      info:
+        type: http
+        address: "127.0.0.1:19112"
+        decoding:
+          codec: json
+
+    outputs:
+      - extract_from: errors
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(length(.), 1)
+              assert_eq!(.[0].message, "something broke")
+              assert_eq!(.[0].level, "error")
+
+      - extract_from: info
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(length(.), 2)
+              assert_eq!(.[0].message, "all good")
+              assert_eq!(.[1].message, "another info")

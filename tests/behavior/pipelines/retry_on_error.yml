@@ -1,0 +1,51 @@
+# Pipeline integration test: HTTP sink retries on non-2xx response
+#
+# Tests that the HttpListener captures request bodies even when returning a 500
+# status code, and that the HTTP sink retries — resulting in more than one
+# captured body for the same event.
+
+sources:
+  socket:
+    type: socket
+    mode: tcp
+    address: "127.0.0.1:19130"
+
+sinks:
+  http_out:
+    inputs: ["socket"]
+    type: http
+    encoding:
+      codec: json
+    uri: "http://127.0.0.1:19131/"
+    batch:
+      timeout_secs: 1
+    request:
+      retry_attempts: 2
+      retry_initial_backoff_secs: 0
+      retry_max_duration_secs: 5
+
+tests:
+  - name: "retries on 500 response"
+    generators:
+      gen:
+        type: socket
+        address: "127.0.0.1:19130"
+        events:
+          - source: '{ "message": "retried event" }'
+
+    listeners:
+      out:
+        type: http
+        address: "127.0.0.1:19131"
+        status_code: 500
+        decoding:
+          codec: json
+
+    outputs:
+      - extract_from: out
+        conditions:
+          - type: vrl
+            source: |
+              # The sink retries on 500, so we expect at least 2 captured bodies
+              assert!(length(.) >= 2)
+              assert_eq!(.[0].message, "retried event")

@@ -57,7 +57,10 @@ const WAIT_FOR_MAX_MILLIS: u64 = 500; // The maximum time to pause before retryi
 
 pub mod addr;
 pub mod compression;
+pub mod event_builder;
 pub mod stats;
+
+pub mod pipeline_test;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod components;

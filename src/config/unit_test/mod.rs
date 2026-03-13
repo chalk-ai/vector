@@ -12,7 +12,7 @@ mod tests;
 mod unit_test_components;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -23,11 +23,6 @@ use tokio::sync::{
     oneshot::{self, Receiver},
 };
 use uuid::Uuid;
-use vrl::{
-    compiler::{Context, TargetValue, TimeZone, state::RuntimeState},
-    diagnostic::Formatter,
-    value,
-};
 
 pub use self::unit_test_components::{
     UnitTestSinkCheck, UnitTestSinkConfig, UnitTestSinkResult, UnitTestSourceConfig,
@@ -40,7 +35,7 @@ use crate::{
         self, ComponentKey, Config, ConfigBuilder, ConfigPath, SinkOuter, SourceOuter,
         TestDefinition, TestInput, TestOutput, loading, loading::ConfigBuilderLoader,
     },
-    event::{Event, EventMetadata, LogEvent},
+    event::Event,
     signal,
     topology::{
         RunningTopology,
@@ -57,6 +52,27 @@ pub struct UnitTest {
 
 pub struct UnitTestResult {
     pub errors: Vec<String>,
+}
+
+/// A test that can be run by the `vector test` command.
+///
+/// Both [`UnitTest`] and `PipelineTest` implement this trait so they can share the same
+/// runner loop in `src/unit_test.rs`.
+#[async_trait::async_trait]
+pub trait RunnableTest: Send {
+    fn name(&self) -> &str;
+    async fn run(self: Box<Self>) -> UnitTestResult;
+}
+
+#[async_trait::async_trait]
+impl RunnableTest for UnitTest {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn run(self: Box<Self>) -> UnitTestResult {
+        (*self).run().await
+    }
 }
 
 impl UnitTest {
@@ -103,7 +119,22 @@ fn init_log_schema_from_paths(
 pub async fn build_unit_tests_main(
     paths: &[ConfigPath],
     signal_handler: &mut signal::SignalHandler,
-) -> Result<Vec<UnitTest>, Vec<String>> {
+) -> Result<Vec<Box<dyn RunnableTest>>, Vec<String>> {
+    // Quick pre-parse to check whether the config contains pipeline tests (tests with
+    // generators or listeners). Pipeline tests are dispatched to a separate build path
+    // that keeps sources and sinks live rather than stripping them.
+    let probe = ConfigBuilderLoader::default()
+        .interpolate_env(true)
+        .load_from_paths(paths)?;
+    let has_pipeline_tests = probe
+        .tests
+        .iter()
+        .any(|t| !t.generators.is_empty() || !t.listeners.is_empty());
+
+    if has_pipeline_tests {
+        return crate::test_util::pipeline_test::build_pipeline_tests(paths).await;
+    }
+
     init_log_schema_from_paths(paths, false)?;
     let secrets_backends_loader = loading::loader_from_paths(
         loading::SecretBackendLoader::default().interpolate_env(true),
@@ -124,13 +155,13 @@ pub async fn build_unit_tests_main(
 
 pub async fn build_unit_tests(
     mut config_builder: ConfigBuilder,
-) -> Result<Vec<UnitTest>, Vec<String>> {
+) -> Result<Vec<Box<dyn RunnableTest>>, Vec<String>> {
     // Sanitize config by removing existing sources and sinks
     config_builder.sources = Default::default();
     config_builder.sinks = Default::default();
 
     let test_definitions = std::mem::take(&mut config_builder.tests);
-    let mut tests = Vec::new();
+    let mut tests: Vec<Box<dyn RunnableTest>> = Vec::new();
     let mut build_errors = Vec::new();
     let metadata = UnitTestBuildMetadata::initialize(&mut config_builder)?;
 
@@ -142,7 +173,7 @@ pub async fn build_unit_tests(
             test_definition.inputs.push(input);
         }
         match build_unit_test(&metadata, test_definition, config_builder.clone()).await {
-            Ok(test) => tests.push(test),
+            Ok(test) => tests.push(Box::new(test)),
             Err(errors) => {
                 let mut test_error = errors.join("\n");
                 // Indent all line breaks
@@ -604,63 +635,11 @@ fn build_outputs(
 }
 
 fn build_input_event(input: &TestInput) -> Result<Event, String> {
-    match input.type_str.as_ref() {
-        "raw" => match input.value.as_ref() {
-            Some(v) => Ok(Event::Log(LogEvent::from_str_legacy(v.clone()))),
-            None => Err("input type 'raw' requires the field 'value'".to_string()),
-        },
-        "vrl" => {
-            if let Some(source) = &input.source {
-                let result = vrl::compiler::compile(source, &vector_vrl_functions::all())
-                    .map_err(|e| Formatter::new(source, e.clone()).to_string())?;
-
-                let mut target = TargetValue {
-                    value: value!({}),
-                    metadata: value::Value::Object(BTreeMap::new()),
-                    secrets: value::Secrets::default(),
-                };
-
-                let mut state = RuntimeState::default();
-                let timezone = TimeZone::default();
-                let mut ctx = Context::new(&mut target, &mut state, &timezone);
-
-                result
-                    .program
-                    .resolve(&mut ctx)
-                    .map(|_| {
-                        Event::Log(LogEvent::from_parts(
-                            target.value.clone(),
-                            EventMetadata::default_with_value(target.metadata.clone()),
-                        ))
-                    })
-                    .map_err(|e| e.to_string())
-            } else {
-                Err("input type 'vrl' requires the field 'source'".to_string())
-            }
-        }
-        "log" => {
-            if let Some(log_fields) = &input.log_fields {
-                let mut event = LogEvent::from_str_legacy("");
-                for (path, value) in log_fields {
-                    event
-                        .parse_path_and_insert(path, value.clone())
-                        .map_err(|e| e.to_string())?;
-                }
-                Ok(event.into())
-            } else {
-                Err("input type 'log' requires the field 'log_fields'".to_string())
-            }
-        }
-        "metric" => {
-            if let Some(metric) = &input.metric {
-                Ok(Event::Metric(metric.clone()))
-            } else {
-                Err("input type 'metric' requires the field 'metric'".to_string())
-            }
-        }
-        _ => Err(format!(
-            "unrecognized input type '{}', expected one of: 'raw', 'log' or 'metric'",
-            input.type_str
-        )),
-    }
+    crate::test_util::event_builder::build_event_from_fields(
+        input.type_str.as_str(),
+        input.value.as_deref(),
+        input.source.as_deref(),
+        input.log_fields.as_ref(),
+        input.metric.as_ref(),
+    )
 }

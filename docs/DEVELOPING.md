@@ -388,6 +388,97 @@ Once complete, you can run your integration tests with:
 make test-integration-<name>
 ```
 
+### Pipeline integration tests
+
+Pipeline integration tests verify that full Vector topologies work end-to-end — including real
+sources, transforms, and sinks — without Docker. They are declared in YAML config files and run
+via `vector test`.
+
+**When to use pipeline tests vs other test types:**
+
+| Test type | Use when |
+|-----------|----------|
+| Unit tests (`cargo test`) | Testing isolated Rust logic |
+| Pipeline tests (`vector test`) | Testing that sources, transforms, and sinks wire together correctly — encoding, batching, compression, routing |
+| Docker integration tests | Testing against a real external service (Kafka, Elasticsearch, etc.) |
+
+**Writing a pipeline test:**
+
+Pipeline tests are regular Vector config files with a `tests` section that includes `generators`
+(which send events into sources) and `listeners` (which receive events from sinks).
+
+```yaml
+sources:
+  socket:
+    type: socket
+    mode: tcp
+    address: "127.0.0.1:19100"  # explicit port — must be unique across parallel tests
+
+sinks:
+  http_out:
+    inputs: ["socket"]
+    type: http
+    encoding:
+      codec: json
+    uri: "http://127.0.0.1:19101/"
+    batch:
+      timeout_secs: 1
+
+tests:
+  - name: "sends events through pipeline"
+    generators:
+      gen:
+        type: socket
+        address: "127.0.0.1:19100"  # must match source address
+        events:
+          - source: '{ "message": "hello world" }'
+
+    listeners:
+      out:
+        type: http
+        address: "127.0.0.1:19101"  # must match sink URI host:port
+        decoding:
+          codec: json
+
+    outputs:
+      - extract_from: out
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(length(.), 1)
+              assert_eq!(.[0].message, "hello world")
+```
+
+**VRL assertion model:**
+
+Unlike unit test conditions (which run once per event), pipeline test conditions receive `.` as a
+`Value::Array` containing **all events** captured by a listener. This enables count checks
+(`assert_eq!(length(.), 2)`), ordering checks (`.[0].message`), and cross-event assertions.
+
+**Supported generator types:**
+
+- `socket` — sends newline-delimited JSON over TCP to a `socket` source
+- `http` — sends JSON events via HTTP POST to an `http_server` source
+
+**Supported listener types:**
+
+- `http` — captures HTTP request bodies; supports `decompression: gzip` and `decoding.codec: json`
+- `tcp` — captures newline-delimited data from a `socket` sink
+
+**Running pipeline tests:**
+
+```bash
+vector test tests/behavior/pipelines/http_sink.yml
+```
+
+Or run all pipeline tests:
+
+```bash
+vector test tests/behavior/pipelines/*.yml
+```
+
+Pipeline tests are stored in `tests/behavior/pipelines/`. See the existing files for examples.
+
 ### Blackbox tests
 
 Vector also offers blackbox testing via

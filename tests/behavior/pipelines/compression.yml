@@ -1,0 +1,48 @@
+# Pipeline integration test: gzip compression + ndjson encoding
+#
+# Tests that the HttpListener correctly decompresses gzip bodies and decodes
+# newline-delimited JSON from an HTTP sink configured with gzip compression.
+
+sources:
+  socket:
+    type: socket
+    mode: tcp
+    address: "127.0.0.1:19120"
+
+sinks:
+  http_out:
+    inputs: ["socket"]
+    type: http
+    encoding:
+      codec: ndjson
+    compression: gzip
+    uri: "http://127.0.0.1:19121/"
+    batch:
+      timeout_secs: 1
+
+tests:
+  - name: "sends gzip-compressed ndjson"
+    generators:
+      gen:
+        type: socket
+        address: "127.0.0.1:19120"
+        events:
+          - source: '{ "message": "compressed event one" }'
+          - source: '{ "message": "compressed event two" }'
+
+    listeners:
+      out:
+        type: http
+        address: "127.0.0.1:19121"
+        decompression: gzip
+        decoding:
+          codec: json
+
+    outputs:
+      - extract_from: out
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(length(.), 2)
+              assert_eq!(.[0].message, "compressed event one")
+              assert_eq!(.[1].message, "compressed event two")

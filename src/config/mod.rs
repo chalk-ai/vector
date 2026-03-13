@@ -422,6 +422,133 @@ pub struct TestDefinition<T: 'static = OutputId> {
     /// A set of component outputs that should not have emitted any events.
     #[serde(default)]
     pub no_outputs_from: Vec<T>,
+
+    /// Pipeline test generators: send events into real sources.
+    ///
+    /// Mutually exclusive with `inputs`. When any generator is present, the test is treated
+    /// as a pipeline integration test rather than a unit test.
+    #[serde(default)]
+    pub generators: IndexMap<String, TestGeneratorConfig>,
+
+    /// Pipeline test listeners: capture output from real sinks.
+    ///
+    /// Mutually exclusive with `inputs`. When any listener is present, the test is treated
+    /// as a pipeline integration test rather than a unit test.
+    #[serde(default)]
+    pub listeners: IndexMap<String, TestListenerConfig>,
+}
+
+/// Configuration for an event definition inside a pipeline test generator.
+///
+/// Similar to [`TestInput`] but without `insert_at` (generators target sources, not transforms)
+/// and defaults to the `vrl` type since generator events are most naturally expressed as VRL.
+#[configurable_component]
+#[derive(Clone, Debug, Default)]
+pub struct GeneratorEventDef {
+    /// The type of the input event.
+    ///
+    /// Can be `raw`, `vrl`, `log`, or `metric`. Defaults to `vrl`.
+    #[serde(default = "default_generator_event_type", rename = "type")]
+    pub type_str: String,
+
+    /// VRL source expression that evaluates to the event object.
+    pub source: Option<String>,
+
+    /// Raw string value (used when `type` is `raw`).
+    pub value: Option<String>,
+
+    /// Key-value log fields (used when `type` is `log`).
+    pub log_fields: Option<IndexMap<String, Value>>,
+
+    /// Metric definition (used when `type` is `metric`).
+    pub metric: Option<Metric>,
+}
+
+fn default_generator_event_type() -> String {
+    "vrl".to_string()
+}
+
+/// A pipeline test generator sends events into a real source.
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TestGeneratorConfig {
+    /// Sends events over TCP (newline-delimited JSON) to a `socket` source.
+    Socket {
+        /// Address of the socket source to connect to (must match the source's `address`).
+        address: SocketAddr,
+
+        /// Events to send.
+        events: Vec<GeneratorEventDef>,
+    },
+    /// Sends events via HTTP POST to an `http_server` source.
+    Http {
+        /// Address of the HTTP source to connect to (must match the source's `address`).
+        address: SocketAddr,
+
+        /// Events to send.
+        events: Vec<GeneratorEventDef>,
+    },
+}
+
+/// A pipeline test listener captures output from a real sink.
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TestListenerConfig {
+    /// HTTP server that captures request bodies from an `http` sink.
+    Http {
+        /// Address for the listener to bind on (must match the sink's `uri` host:port).
+        address: SocketAddr,
+
+        /// HTTP response status code to return (default 200).
+        #[serde(default = "default_listener_status_code")]
+        status_code: u16,
+
+        /// Decompression algorithm to apply before decoding.
+        #[serde(default)]
+        decompression: Option<ListenerDecompression>,
+
+        /// Body decoding configuration.
+        decoding: ListenerDecoding,
+    },
+    /// TCP server that captures newline-delimited data from a `socket` sink.
+    Tcp {
+        /// Address for the listener to bind on (must match the sink's `address`).
+        address: SocketAddr,
+    },
+}
+
+/// Decompression algorithm for [`TestListenerConfig::Http`].
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ListenerDecompression {
+    /// Decompress using gzip.
+    Gzip,
+    /// Decompress using zstd.
+    Zstd,
+}
+
+/// Decoding configuration for [`TestListenerConfig::Http`].
+#[configurable_component]
+#[derive(Clone, Debug)]
+pub struct ListenerDecoding {
+    /// Codec to use when parsing the body into events.
+    pub codec: ListenerCodec,
+}
+
+/// Supported listener body codecs.
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ListenerCodec {
+    /// Parse bodies as JSON.
+    Json,
+}
+
+const fn default_listener_status_code() -> u16 {
+    200
 }
 
 impl TestDefinition<String> {
@@ -435,6 +562,8 @@ impl TestDefinition<String> {
             inputs,
             outputs,
             no_outputs_from,
+            generators,
+            listeners,
         } = self;
         let mut errors = Vec::new();
 
@@ -497,6 +626,8 @@ impl TestDefinition<String> {
                 inputs,
                 outputs,
                 no_outputs_from,
+                generators,
+                listeners,
             })
         } else {
             Err(errors)
@@ -512,6 +643,8 @@ impl TestDefinition<OutputId> {
             inputs,
             outputs,
             no_outputs_from,
+            generators,
+            listeners,
         } = self;
 
         let outputs = outputs
@@ -536,6 +669,8 @@ impl TestDefinition<OutputId> {
             inputs,
             outputs,
             no_outputs_from,
+            generators,
+            listeners,
         }
     }
 }

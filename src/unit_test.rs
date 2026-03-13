@@ -162,7 +162,7 @@ pub async fn cmd(opts: &Opts, signal_handler: &mut signal::SignalHandler) -> exi
                 let test_suite_start = Instant::now();
 
                 for test in tests {
-                    let name = test.name.clone();
+                    let name = test.name().to_owned();
 
                     let test_case_start = Instant::now();
                     let UnitTestResult { errors } = test.run().await;
