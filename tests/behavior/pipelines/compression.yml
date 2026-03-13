@@ -16,7 +16,7 @@ sinks:
     inputs: ["socket"]
     type: http
     encoding:
-      codec: ndjson
+      codec: json
     compression: gzip
     uri: "http://127.0.0.1:19121/"
     batch:

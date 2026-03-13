@@ -46,9 +46,18 @@ pub fn build_event_from_fields(
                 result
                     .program
                     .resolve(&mut ctx)
-                    .map(|_| {
+                    .map(|return_value| {
+                        // Use the program's return value when it is an Object — this handles
+                        // object-literal sources like `{ "message": "hello" }` which evaluate
+                        // to an object without mutating `.`.
+                        // Fall back to `target.value` for programs that use field assignments
+                        // (`.field = value`) which mutate `.` and return a non-Object value.
+                        let event_value = match return_value {
+                            vrl::value::Value::Object(_) => return_value,
+                            _ => target.value.clone(),
+                        };
                         Event::Log(LogEvent::from_parts(
-                            target.value.clone(),
+                            event_value,
                             EventMetadata::default_with_value(target.metadata.clone()),
                         ))
                     })

@@ -23,7 +23,7 @@ sinks:
       timeout_secs: 1
     request:
       retry_attempts: 2
-      retry_initial_backoff_secs: 0
+      retry_initial_backoff_secs: 1
       retry_max_duration_secs: 5
 
 tests:
