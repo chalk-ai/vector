@@ -96,7 +96,8 @@ impl TestListener for HttpListener {
             }
         });
 
-        let server = Server::bind(&addr)
+        let server = Server::try_bind(&addr)
+            .map_err(|e| format!("HttpListener failed to bind {addr}: {e}"))?
             .serve(service)
             .with_graceful_shutdown(tripwire.then(crate::shutdown::tripwire_handler))
             .map_err(|error| panic!("HttpListener server error: {error}"));
