@@ -288,6 +288,21 @@ tolerance band (63–77 %).
 
 <!-- RESULTS-HPA-END -->
 
+## Results summary
+
+| | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) | Phase 4 (HPA) |
+| - | ----------------- | ------------------ | ------------------ | ------------------ |
+| Throughput | 19.04 MiB/s | 55.38 MiB/s | 62.32 MiB/s | **62.76 MiB/s** |
+| Events/s | 149,710 | 435,543 | 490,288 | **493,392** |
+| CPU per pod | 1000m (100 %) | ~1000m (99 %) | ~480m (48 %) | **~630m (63 %)** |
+| Bottleneck | Vector CPU | Vector CPU | None | None |
+| Scaling vs Phase 1 | 1× | 2.91× | 3.27× | **3.29×** |
+| Pod count | manual (1) | manual (3) | manual (8) | **auto (6)** |
+
+Phase 4 reaches Phase 3's throughput with 2 fewer pods and no manual scaling:
+the HPA found 6 pods, close to the theoretical **3.4 pod** crossover, and kept
+CPU near its 70 % target instead of leaving ~50 % headroom idle on every pod.
+
 ## Key takeaways
 
 1. **A single pod caps at its CPU limit.**  At 65 MiB/s load, 1 pod can absorb
