@@ -86,7 +86,6 @@ through a plain ClusterIP Service.
 - Cluster nodes with at least 1 allocatable CPU per Vector pod
 - `grpcurl` for metric collection
 
-
 ## How the metrics are collected
 
 Each Vector pod exposes `ObservabilityService` on port 8686 (gRPC). The
@@ -169,7 +168,7 @@ Vector should back-pressure lading down to whatever it can actually process.
 <!-- RESULTS-SINGLE-START -->
 
 | Metric | Value |
-|--------|-------|
+| ------ | ----- |
 | Throughput | **19.04 MiB/s** |
 | Events/s | **149,710 ev/s** |
 | Pod CPU | **1000m (100 %)** |
@@ -197,7 +196,7 @@ hasn't been reached yet.
 <!-- RESULTS-LB-START -->
 
 | Metric | Value |
-|--------|-------|
+| ------ | ----- |
 | Throughput | **55.38 MiB/s** |
 | Events/s | **435,543 ev/s** |
 | Pod CPU | **~1000m (99 %)** |
@@ -221,7 +220,7 @@ the bottleneck; all 65 MiB/s flows through and pods have ample headroom.
 <!-- RESULTS-8W-START -->
 
 | Metric | Value |
-|--------|-------|
+| ------ | ----- |
 | Throughput | **62.32 MiB/s** |
 | Events/s | **490,288 ev/s** |
 | Pod CPU | **~480m (48 %)** |
@@ -241,7 +240,7 @@ All phases: **65 MiB/s lading** (100 parallel connections, Nginx L7 ingress),
 pods limited to **1 vCPU / 1 GiB**.
 
 | | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) |
-|-|-----------------|------------------|------------------|
+| - | ----------------- | ------------------ | ------------------ |
 | Throughput | 19.04 MiB/s | 55.38 MiB/s | **62.32 MiB/s** |
 | Events/s | 149,710 | 435,543 | 490,288 |
 | CPU per pod | 1000m (100 %) | ~1000m (99 %) | ~480m (48 %) |
@@ -274,7 +273,7 @@ kubectl autoscale deployment vector -n vector-perf \
 **Scale-up timeline (no manual intervention):**
 
 | Time | Replicas | Avg CPU | Event |
-|------|----------|---------|-------|
+| ---- | -------- | ------- | ----- |
 | t=0 s | **1** | 100 % | load starts |
 | t=61 s | **2** | 100 % | HPA scales 1→2 |
 | t=91 s | **3** | 99 % | HPA scales 2→3 |
