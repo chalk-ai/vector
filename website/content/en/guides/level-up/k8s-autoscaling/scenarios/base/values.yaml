@@ -1,11 +1,14 @@
-# Shared Helm values for all Vector scenarios.
-# Layer a scenario-specific overlay on top:
+# Helm values for Vector, used across all phases of the k8s-autoscaling guide:
 #
 #   helm upgrade --install vector vectordotdev/vector \
-#     --repo https://helm.vector.dev \
-#     --namespace vector-perf --create-namespace \
+#     --namespace vector-perf \
 #     -f scenarios/base/values.yaml \
-#     -f scenarios/<scenario>/values.yaml
+#     --set replicas=<n>
+#
+# Only the initial install (replicas=1) goes through Helm. After that, every
+# phase scales the Deployment directly via `kubectl scale` / `kubectl
+# autoscale`, so the live replica count drifts from this file — a later
+# `helm upgrade` without --set replicas would scale it back down to 1.
 
 role: Stateless-Aggregator
 

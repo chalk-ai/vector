@@ -10,8 +10,11 @@ tags: ["level up", "guides", "guide", "kubernetes", "load balancing", "nginx"]
 ---
 
 This guide walks through observing a single Vector pod hit its CPU ceiling while
-parsing Apache Common Log format, then eliminating that ceiling by scaling
-horizontally behind an Nginx L7 load balancer.
+parsing Apache Common Log format, then eliminating that ceiling by manually
+scaling horizontally behind Nginx. Then we're going to set up automatically
+scaling using Kubernetes [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+(HPA) find its own equilibrium.
+
 All steps are reproducible using the manifests and Helm values in this repository.
 
 ## Background
@@ -163,8 +166,6 @@ generate `apache_common` log lines at 65 MiB/s across 100 parallel connections:
 65 MiB/s is expected to overwhelm a single pod's regex-parsing capacity, so
 Vector should back-pressure lading down to whatever it can actually process.
 
-### Phase 1 results
-
 <!-- RESULTS-SINGLE-START -->
 
 | Metric | Value |
@@ -180,7 +181,7 @@ The pod is pinned at its 1000m CPU limit and throughput tops out at
 19.04 MiB/s, confirming the expected CPU ceiling. That per-pod figure is the
 baseline the next two phases are measured against.
 
-## Phase 2 — Three pods (still bottlenecked)
+## Phase 2 — Three pods
 
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=3
@@ -190,8 +191,6 @@ kubectl rollout status deployment/vector -n vector-perf
 65 MiB/s > 3 × 19 MiB/s = 57 MiB/s combined capacity.  All three pods are
 still fully saturated. Adding pods increases throughput, but the ceiling
 hasn't been reached yet.
-
-### Phase 2 results
 
 <!-- RESULTS-LB-START -->
 
@@ -205,7 +204,7 @@ hasn't been reached yet.
 
 <!-- RESULTS-LB-END -->
 
-## Phase 3 — Eight pods (bottleneck removed)
+## Phase 3 — Eight pods
 
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=8
@@ -214,8 +213,6 @@ kubectl rollout status deployment/vector -n vector-perf
 
 8 × 19 MiB/s = 152 MiB/s combined capacity >> 65 MiB/s.  Vector is no longer
 the bottleneck; all 65 MiB/s flows through and pods have ample headroom.
-
-### Phase 3 results
 
 <!-- RESULTS-8W-START -->
 
