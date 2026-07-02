@@ -278,7 +278,7 @@ kubectl autoscale deployment vector -n vector-perf \
 | t=167 s | **6** | 72 % | HPA scales 5→6 |
 | t=182 s | **6** | **63 %** | **Stable, equilibrium** |
 
-Time to equilibrium: **484 s (~8 min)**, 4 scale events, 0 manual cycling.
+Time to equilibrium: **182 s (~3 min)**, 4 scale events, 0 manual cycling.
 
 **Throughput at equilibrium: 62.76 MiB/s, 493,392 ev/s, 6 pods, 63 % avg CPU.**
 
@@ -304,7 +304,7 @@ tolerance band (63–77 %).
 
 4. **HPA finds the right pod count automatically.**  With HTTP + L7 routing,
    every new pod starts receiving traffic immediately after becoming Ready.
-   HPA converged at 6 pods in 484 s with zero manual intervention.
+   HPA converged at 6 pods in 182 s with zero manual intervention.
 
 ---
 
