@@ -11,13 +11,29 @@
 {{ $label := .Get "label" | default (path.Base $path) }}
 {{ $content := readFile $path }}
 {{ $githubUrl := printf "https://github.com/vectordotdev/vector/blob/master/website/%s" $path }}
+{{ $collapse := .Get "collapse" | default false }}
 
-<div class="no-prose mb-4 border dark:border-gray-700 rounded-md">
-  <div class="flex justify-between items-center px-4 py-2 border-b dark:border-gray-700 text-sm">
-    <code class="text-gray-600 dark:text-gray-400">{{ $label }}</code>
-    <a href="{{ $githubUrl }}" target="_blank" rel="noopener noreferrer" class="text-secondary dark:text-primary hover:underline">
+{{ $chevron := cond $collapse `<svg class="embed-chevron w-4 h-4 mr-2 flex-none" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>` "" }}
+
+{{ $header := printf `<div class="flex justify-between items-center px-4 py-2 %s text-sm">
+    <span class="flex items-center">%s<code class="text-gray-600 dark:text-gray-400">%s</code></span>
+    <a href="%s" target="_blank" rel="noopener noreferrer" class="text-secondary dark:text-primary hover:underline">
       View on GitHub
     </a>
-  </div>
+  </div>` (cond $collapse "" "border-b dark:border-gray-700") $chevron $label $githubUrl }}
+
+{{ if $collapse }}
+<style>
+  .embed-chevron { transition: transform 150ms ease; }
+  details[open] > summary .embed-chevron { transform: rotate(90deg); }
+</style>
+<details class="no-prose mb-4 border dark:border-gray-700 rounded-md">
+  <summary class="list-none cursor-pointer marker:content-none [&::-webkit-details-marker]:hidden">{{ $header | safeHTML }}</summary>
+  {{ highlight $content $lang "" }}
+</details>
+{{ else }}
+<div class="no-prose mb-4 border dark:border-gray-700 rounded-md">
+  {{ $header | safeHTML }}
   {{ highlight $content $lang "" }}
 </div>
+{{ end }}
