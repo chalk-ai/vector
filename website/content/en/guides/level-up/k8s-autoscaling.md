@@ -26,54 +26,25 @@ When saturation is reached, Vector applies **backpressure rather than dropping
 events**. The HTTP source stops accepting new requests; Nginx stalls the load
 generator's connections.
 
-## Why HTTP + L7 load balancing?
-
-A Kubernetes ClusterIP Service load-balances at L4: kube-proxy (iptables/IPVS)
-picks a backend pod at **connection establishment** and that mapping is fixed for
-the lifetime of the connection.  With a persistent TCP producer, all connections
-are already pinned to the original pods before the HPA fires.  When a new pod
-becomes Ready, it receives zero connections and therefore zero load. The HPA
-sees no CPU drop on the old pods, so it keeps scaling up until it hits
-`maxReplicas`, never finding a stable equilibrium.
-
-HTTP with an Nginx L7 ingress routes at the **request level**.  Each HTTP POST
-is dispatched independently to a backend pod, regardless of which pod served the
-previous request.  The moment a new pod becomes Ready it starts receiving its
-share of requests.  CPU redistributes within seconds, and the HPA can converge
-to a genuine equilibrium without any manual intervention, as Phase 4 below
-shows.
-
-This is why the setup below installs an Nginx ingress in front of Vector
-instead of exposing it through a plain ClusterIP Service.
-
 ## Test environment
 
 The benchmark was measured on a **K3s single-node cluster on an EC2 c5.4xlarge**
 (16 vCPU, 32 GiB RAM). A single-node cluster was chosen so that latency and
 network overhead are not a factor and collected metrics are precise.
 
-- **Load generator:** [lading](https://github.com/DataDog/lading) v0.32.0,
+- **Load generator:** [lading](https://github.com/DataDog/lading),
   generating `apache_common` log lines at a configurable byte rate. It
   maintains persistent parallel connections and is capable of sustained
   high-throughput HTTP load.
-- **Load level:** **65 MiB/s** across all phases: enough to overwhelm 1–3
-  Vector pods but within what 4+ pods can absorb, so the HPA finds a natural
-  equilibrium.
+- **Load level:** **65 MiB/s** is used across all tests to get comparable
+  throughput measurements.
 - **Vector pod resources:** **1 vCPU / 1 GiB**, with `requests == limits`
   (Guaranteed QoS), so CPU throttling, not memory pressure or scheduling
   variance, is the only bottleneck under test.
 
-## Prerequisites
-
-- `kubectl` configured against a target cluster
-- `helm` ≥ 3.0
-- Cluster nodes with at least 1 allocatable CPU per Vector pod
-- `grpcurl` for metric collection
-
-
 ## Architecture
 
-```
+```text
 1 × lading pod  (100 parallel connections, 65 MiB/s)
         │  HTTP POST → ingress-nginx ClusterIP :80
         ▼
@@ -90,6 +61,31 @@ network overhead are not a factor and collected metrics are precise.
         ▼
    consumer pod  (socat -u, drains to /dev/null)
 ```
+
+## Why HTTP + L7 load balancing?
+
+A plain TCP connection has no request boundary: once a client is connected to
+a pod, a Kubernetes ClusterIP Service (which load-balances at L4) has no
+opportunity to redistribute that traffic to a newly scaled-up pod. HTTP
+defines a request boundary, so an L7 load balancer like Nginx can dispatch
+each request independently, letting new pods pick up load as soon as they're
+Ready.
+
+A similar setup using HAProxy in TCP mode has the same problem: it
+load-balances at the connection level, so a single producer's connection stays
+pinned to one consumer for its lifetime, and can leave some consumers starved
+of data entirely.
+
+This is we install an Nginx ingress in front of Vector instead of exposing it
+through a plain ClusterIP Service.
+
+## Prerequisites
+
+- `kubectl` configured against a target cluster
+- `helm` ≥ 3.0
+- Cluster nodes with at least 1 allocatable CPU per Vector pod
+- `grpcurl` for metric collection
+
 
 ## How the metrics are collected
 
@@ -114,20 +110,8 @@ grpcurl -plaintext -d '{}' localhost:18686 \
 Diffing `receivedBytesTotal` for the `in` component between `t0.json` and
 `t30.json`, then dividing by 30 s, gives that pod's throughput.
 
-`run-experiment.sh` automates this across all four phases end to end,
-scaling the deployment, waiting for the rollout, measuring throughput, and
-creating the HPA for Phase 4, and prints a single results table:
-
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/scripts/run-experiment.sh" >}}
-
-```bash
-KUBECONFIG=/path/to/kubeconfig ./scripts/run-experiment.sh
-```
-
-Multiply the per-pod throughput by the number of equally-loaded pods for the
-cluster total (verify with `kubectl top pods -n vector-perf -l app.kubernetes.io/name=vector`).
-
----
+See [Replicating these results](#replicating-these-results) below for a link to the script that
+automates this.
 
 ## Setup
 
@@ -151,8 +135,6 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 helm repo add vectordotdev https://helm.vector.dev
 helm repo update
 ```
-
----
 
 ## Phase 1 — Single pod
 
@@ -199,8 +181,6 @@ The pod is pinned at its 1000m CPU limit and throughput tops out at
 19.04 MiB/s, confirming the expected CPU ceiling. That per-pod figure is the
 baseline the next two phases are measured against.
 
----
-
 ## Phase 2 — Three pods (still bottlenecked)
 
 ```bash
@@ -225,8 +205,6 @@ hasn't been reached yet.
 | Bottleneck | **Vector CPU** |
 
 <!-- RESULTS-LB-END -->
-
----
 
 ## Phase 3 — Eight pods (bottleneck removed)
 
@@ -255,8 +233,6 @@ load is distributed evenly across all 8 pods.
 
 <!-- RESULTS-8W-END -->
 
----
-
 ## Comparison
 
 <!-- RESULTS-COMPARE-START -->
@@ -276,8 +252,6 @@ The throughput ceiling is reached somewhere between 3 and 8 pods, at exactly
 65 / 19 ≈ **3.4 pods**.  Phase 4 confirms this: the HPA converges at 6 pods.
 
 <!-- RESULTS-COMPARE-END -->
-
----
 
 ## Phase 4 — HPA finds equilibrium
 
@@ -318,8 +292,6 @@ tolerance band (63–77 %).
 
 <!-- RESULTS-HPA-END -->
 
----
-
 ## Key takeaways
 
 1. **A single pod caps at its CPU limit.**  At 65 MiB/s load, 1 pod can absorb
@@ -337,3 +309,23 @@ tolerance band (63–77 %).
 4. **HPA finds the right pod count automatically.**  With HTTP + L7 routing,
    every new pod starts receiving traffic immediately after becoming Ready.
    HPA converged at 6 pods in 484 s with zero manual intervention.
+
+---
+
+## Replicating these results
+
+The [`terraform/`](https://github.com/vectordotdev/vector/tree/master/website/content/en/guides/level-up/k8s-autoscaling/terraform)
+directory provisions the K3s single-node cluster (EC2 `c5.4xlarge`) the
+benchmark above was measured on, if you don't already have a cluster to test
+against.
+
+Once the [Setup](#setup) steps are complete and Phase 1's producer and ingress
+are deployed, `run-experiment.sh` runs all four phases end to end: scaling the
+deployment, waiting for each rollout, measuring throughput, and creating the
+HPA for Phase 4, then prints a single results table.
+
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/scripts/run-experiment.sh" >}}
+
+```bash
+KUBECONFIG=/path/to/kubeconfig ./scripts/run-experiment.sh
+```
