@@ -193,10 +193,6 @@ where
 {
     futures_util::pin_mut!(body);
 
-    // Pre-size from the Content-Length header (capped at the limit) so the body is collected with
-    // a single allocation and one copy per chunk, matching the previous `warp::body::bytes()`
-    // cost. Without this the buffer starts empty and grows by repeated realloc+recopy on every
-    // request, which shows up as a per-request throughput/CPU regression on high-volume sources.
     let capacity = declared_len
         .and_then(|len| usize::try_from(len).ok())
         .map_or(0, |len| len.min(max_body_size));
