@@ -60,13 +60,12 @@ pub(crate) fn limited_body(max_body_size: usize) -> BoxedFilter<(Bytes,)> {
                     max_body_size,
                 )))
             } else {
-                Ok(())
+                Ok(declared)
             }
         })
-        .untuple_one()
         .and(warp::body::stream())
-        .and_then(move |body| async move {
-            collect_body_with_limit(body, max_body_size)
+        .and_then(move |declared: Option<u64>, body| async move {
+            collect_body_with_limit(body, max_body_size, declared)
                 .await
                 .map_err(warp::reject::custom)
         })
@@ -183,14 +182,25 @@ fn decompress_snappy(
     feature = "sources-opentelemetry",
     test
 ))]
-async fn collect_body_with_limit<S, B>(body: S, max_body_size: usize) -> Result<Bytes, ErrorMessage>
+async fn collect_body_with_limit<S, B>(
+    body: S,
+    max_body_size: usize,
+    declared_len: Option<u64>,
+) -> Result<Bytes, ErrorMessage>
 where
     S: futures_util::Stream<Item = Result<B, warp::Error>>,
     B: Buf,
 {
     futures_util::pin_mut!(body);
 
-    let mut bytes = BytesMut::new();
+    // Pre-size from the Content-Length header (capped at the limit) so the body is collected with
+    // a single allocation and one copy per chunk, matching the previous `warp::body::bytes()`
+    // cost. Without this the buffer starts empty and grows by repeated realloc+recopy on every
+    // request, which shows up as a per-request throughput/CPU regression on high-volume sources.
+    let capacity = declared_len
+        .and_then(|len| usize::try_from(len).ok())
+        .map_or(0, |len| len.min(max_body_size));
+    let mut bytes = BytesMut::with_capacity(capacity);
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|error| {
             ErrorMessage::new(
@@ -368,7 +378,7 @@ mod tests {
             Ok::<_, warp::Error>(Bytes::from_static(b" world")),
         ]);
 
-        let collected = collect_body_with_limit(body, 11).await.unwrap();
+        let collected = collect_body_with_limit(body, 11, Some(11)).await.unwrap();
         assert_eq!(collected, Bytes::from_static(b"hello world"));
     }
 
@@ -379,7 +389,7 @@ mod tests {
             Ok::<_, warp::Error>(Bytes::from_static(b" world")),
         ]);
 
-        let err = collect_body_with_limit(body, 5)
+        let err = collect_body_with_limit(body, 5, None)
             .await
             .expect_err("should reject");
         assert_eq!(err.status_code(), StatusCode::PAYLOAD_TOO_LARGE);
