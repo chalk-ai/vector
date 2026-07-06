@@ -41,7 +41,7 @@ network overhead are not a factor and collected metrics are precise.
   high-throughput HTTP load.
 - **Load level:** **65 MiB/s** is used across all tests to get comparable
   throughput measurements.
-- **Vector pod resources:** **1 vCPU / 1 GiB**, with `requests == limits`
+- **Vector pod resources:** **1 vCPU / 2 GiB**, with `requests == limits`
   (Guaranteed QoS), so CPU throttling, not memory pressure or scheduling
   variance, is the only bottleneck under test.
 
@@ -54,7 +54,7 @@ network overhead are not a factor and collected metrics are precise.
    Nginx ingress controller  (L7 round-robin per request)
         │
         ▼ (1, 3, or 8 pods depending on phase)
-   Vector pod(s)  (1 vCPU / 1 GiB each)
+   Vector pod(s)  (1 vCPU / 2 GiB each)
    ┌──────────────────────────────────────┐
    │ source:    http_server :9000         │
    │ transform: parse_regex! (apache_clf) │
@@ -234,7 +234,7 @@ load is distributed evenly across all 8 pods.
 <!-- RESULTS-COMPARE-START -->
 
 All phases: **65 MiB/s lading** (100 parallel connections, Nginx L7 ingress),
-pods limited to **1 vCPU / 1 GiB**.
+pods limited to **1 vCPU / 2 GiB**.
 
 | | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) |
 | - | ----------------- | ------------------ | ------------------ |

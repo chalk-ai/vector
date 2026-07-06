@@ -25,6 +25,45 @@ wait_rollout() {
   kube rollout status deployment/vector -n "$NAMESPACE" --timeout=120s >&2
 }
 
+# Wait until all Vector pods have had a stable restart count for 30 consecutive
+# seconds. This ensures pods have survived the initial load burst (which can
+# cause 1–3 OOM restarts before backpressure establishes) before we measure.
+wait_stable() {
+  local max_wait=300 interval=5 stable_needed=6
+  local elapsed=0 stable_count=0 last_restarts=""
+
+  log "Waiting for Vector pods to stabilise under load..."
+  while [[ "$elapsed" -lt "$max_wait" ]]; do
+    local restarts
+    restarts=$(kube get pods -n "$NAMESPACE" -l app.kubernetes.io/name=vector \
+      -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
+      2>/dev/null | paste -sd,)
+
+    if [[ "$restarts" == "$last_restarts" && -n "$restarts" ]]; then
+      stable_count=$(( stable_count + 1 ))
+      log "[${elapsed}s] restarts=${restarts} (stable ${stable_count}/${stable_needed})"
+      if [[ "$stable_count" -ge "$stable_needed" ]]; then
+        log "Pods stable (restart counts: ${restarts})."
+        return 0
+      fi
+    else
+      if [[ -n "$last_restarts" ]]; then
+        log "[${elapsed}s] restarts=${restarts} (changed from ${last_restarts}, reset)"
+      else
+        log "[${elapsed}s] restarts=${restarts}"
+      fi
+      stable_count=0
+      last_restarts="$restarts"
+    fi
+
+    sleep "$interval"
+    elapsed=$(( elapsed + interval ))
+  done
+
+  log "ERROR: Vector pods did not stabilise within ${max_wait}s."
+  exit 1
+}
+
 delete_hpa() {
   kube delete hpa vector -n "$NAMESPACE" 2>/dev/null || true
 }
@@ -108,7 +147,7 @@ measure_pods() {
   done
 
   for pid in "${pids[@]}"; do
-    kill "$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   done
 
@@ -152,6 +191,7 @@ run_static_phase() {
   delete_hpa
   kube scale deployment vector -n "$NAMESPACE" --replicas="$replicas" >/dev/null 2>&1
   wait_rollout
+  wait_stable
 
   log "Phase $phase: measuring all $replicas pod(s) (20 s warmup + 30 s window)..."
   sleep 20
@@ -178,6 +218,7 @@ run_hpa_phase() {
   delete_hpa
   kube scale deployment vector -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
   wait_rollout
+  wait_stable
   kube autoscale deployment vector -n "$NAMESPACE" \
     --cpu-percent=70 --min=1 --max=8 >/dev/null 2>&1
 
@@ -217,12 +258,11 @@ run_hpa_phase() {
       stable_count=1
     fi
 
-    # Stable = same replica count for 75 s AND cpu within HPA tolerance band (63–77%)
+    # Stable = same replica count for 75 s. CPU level is informational; the HPA
+    # has converged when it stops changing the replica count.
     if [[ "$stable_count" -ge 5 && "$elapsed" -gt 120 && -n "$cpu_avg" ]]; then
-      if [[ "$cpu_avg" -ge 63 && "$cpu_avg" -le 77 ]]; then
-        log "Equilibrium: $replicas pods, ${cpu_avg}% CPU, ${elapsed}s elapsed."
-        break
-      fi
+      log "Equilibrium: $replicas pods, ${cpu_avg}% CPU, ${elapsed}s elapsed."
+      break
     fi
 
     sleep 15
