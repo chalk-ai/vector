@@ -170,15 +170,15 @@ Vector should back-pressure lading down to whatever it can actually process.
 
 | Metric | Value |
 | ------ | ----- |
-| Throughput | **19.04 MiB/s** |
-| Events/s | **149,710 ev/s** |
+| Throughput | **18.55 MiB/s** |
+| Events/s | **145,875 ev/s** |
 | Pod CPU | **1000m (100 %)** |
 | Bottleneck | **Vector CPU** |
 
 <!-- RESULTS-SINGLE-END -->
 
 The pod is pinned at its 1000m CPU limit and throughput tops out at
-19.04 MiB/s, confirming the expected CPU ceiling. That per-pod figure is the
+18.55 MiB/s, confirming the expected CPU ceiling. That per-pod figure is the
 baseline the next two phases are measured against.
 
 ## Phase 2 — Three pods
@@ -188,7 +188,7 @@ kubectl scale deployment vector -n vector-perf --replicas=3
 kubectl rollout status deployment/vector -n vector-perf
 ```
 
-65 MiB/s > 3 × 19 MiB/s = 57 MiB/s combined capacity.  All three pods are
+65 MiB/s > 3 × 18.55 MiB/s = 55.65 MiB/s combined capacity.  All three pods are
 still fully saturated. Adding pods increases throughput, but the ceiling
 hasn't been reached yet.
 
@@ -196,10 +196,10 @@ hasn't been reached yet.
 
 | Metric | Value |
 | ------ | ----- |
-| Throughput | **55.38 MiB/s** |
-| Events/s | **435,543 ev/s** |
-| Pod CPU | **~1000m (99 %)** |
-| Scaling vs Phase 1 | **2.91×** |
+| Throughput | **56.44 MiB/s** |
+| Events/s | **443,784 ev/s** |
+| Pod CPU | **~1000m (98 %)** |
+| Scaling vs Phase 1 | **3.04×** |
 | Bottleneck | **Vector CPU** |
 
 <!-- RESULTS-LB-END -->
@@ -211,19 +211,19 @@ kubectl scale deployment vector -n vector-perf --replicas=8
 kubectl rollout status deployment/vector -n vector-perf
 ```
 
-8 × 19 MiB/s = 152 MiB/s combined capacity >> 65 MiB/s.  Vector is no longer
+8 × 18.55 MiB/s = 148.4 MiB/s combined capacity >> 65 MiB/s.  Vector is no longer
 the bottleneck; all 65 MiB/s flows through and pods have ample headroom.
 
 <!-- RESULTS-8W-START -->
 
 | Metric | Value |
 | ------ | ----- |
-| Throughput | **62.32 MiB/s** |
-| Events/s | **490,288 ev/s** |
+| Throughput | **65.47 MiB/s** |
+| Events/s | **514,841 ev/s** |
 | Pod CPU | **~480m (48 %)** |
 | Bottleneck | **None, spare capacity** |
 
-The bottleneck has been eliminated.  Each pod handles ~7.8 MiB/s at ~48 % CPU,
+The bottleneck has been eliminated.  Each pod handles ~8.2 MiB/s at ~48 % CPU,
 leaving over half of each pod's capacity unused.  With L7 per-request routing,
 load is distributed evenly across all 8 pods.
 
@@ -238,14 +238,14 @@ pods limited to **1 vCPU / 2 GiB**.
 
 | | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) |
 | - | ----------------- | ------------------ | ------------------ |
-| Throughput | 19.04 MiB/s | 55.38 MiB/s | **62.32 MiB/s** |
-| Events/s | 149,710 | 435,543 | 490,288 |
-| CPU per pod | 1000m (100 %) | ~1000m (99 %) | ~480m (48 %) |
+| Throughput | 18.55 MiB/s | 56.44 MiB/s | **65.47 MiB/s** |
+| Events/s | 145,875 | 443,784 | 514,841 |
+| CPU per pod | 1000m (100 %) | ~1000m (98 %) | ~480m (48 %) |
 | Bottleneck | Vector CPU | Vector CPU | **None** |
-| Scaling vs Phase 1 | 1× | 2.91× | **3.27×** |
+| Scaling vs Phase 1 | 1× | 3.04× | **3.53×** |
 
 The throughput ceiling is reached somewhere between 3 and 8 pods, at exactly
-65 / 19 ≈ **3.4 pods**.  Phase 4 confirms this: the HPA converges at 6 pods.
+65 / 18.55 ≈ **3.5 pods**.  Phase 4 confirms this: the HPA converges at 5 pods.
 
 <!-- RESULTS-COMPARE-END -->
 
@@ -272,19 +272,18 @@ kubectl autoscale deployment vector -n vector-perf \
 | Time | Replicas | Avg CPU | Event |
 | ---- | -------- | ------- | ----- |
 | t=0 s | **1** | 100 % | load starts |
-| t=61 s | **2** | 100 % | HPA scales 1→2 |
-| t=91 s | **3** | 99 % | HPA scales 2→3 |
-| t=137 s | **5** | 95 % | HPA scales 3→5 |
-| t=167 s | **6** | 72 % | HPA scales 5→6 |
-| t=182 s | **6** | **63 %** | **Stable, equilibrium** |
+| t=31 s | **2** | 100 % | HPA scales 1→2 |
+| t=76 s | **3** | 100 % | HPA scales 2→3 |
+| t=106 s | **5** | 98 % | HPA scales 3→5 |
+| t=167 s | **5** | **73 %** | **Stable, equilibrium** |
 
-Time to equilibrium: **182 s (~3 min)**, 4 scale events, 0 manual cycling.
+Time to equilibrium: **167 s (~3 min)**, 3 scale events, 0 manual cycling.
 
-**Throughput at equilibrium: 62.76 MiB/s, 493,392 ev/s, 6 pods, 63 % avg CPU.**
+**Throughput at equilibrium: 68.18 MiB/s, 536,136 ev/s, 5 pods, 73 % avg CPU.**
 
-The HPA settled at 6 pods: at 5 pods CPU reached 83 % (above the 70 % target),
-triggering a final scale-up. At 6 pods CPU stabilised at 63 %, within the ±10 %
-tolerance band (63–77 %).
+The HPA settled at 5 pods: CPU converged from 92 % immediately after the 3→5
+scale event down to 73 %, within the ±10 % tolerance band (63–77 %), and held
+stable for three consecutive 15 s intervals.
 
 <!-- RESULTS-HPA-END -->
 
@@ -292,21 +291,21 @@ tolerance band (63–77 %).
 
 | | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) | Phase 4 (HPA) |
 | - | ----------------- | ------------------ | ------------------ | ------------------ |
-| Throughput | 19.04 MiB/s | 55.38 MiB/s | 62.32 MiB/s | **62.76 MiB/s** |
-| Events/s | 149,710 | 435,543 | 490,288 | **493,392** |
-| CPU per pod | 1000m (100 %) | ~1000m (99 %) | ~480m (48 %) | **~630m (63 %)** |
+| Throughput | 18.55 MiB/s | 56.44 MiB/s | 65.47 MiB/s | **68.18 MiB/s** |
+| Events/s | 145,875 | 443,784 | 514,841 | **536,136** |
+| CPU per pod | 1000m (100 %) | ~1000m (98 %) | ~480m (48 %) | **~730m (73 %)** |
 | Bottleneck | Vector CPU | Vector CPU | None | None |
-| Scaling vs Phase 1 | 1× | 2.91× | 3.27× | **3.29×** |
-| Pod count | manual (1) | manual (3) | manual (8) | **auto (6)** |
+| Scaling vs Phase 1 | 1× | 3.04× | 3.53× | **3.68×** |
+| Pod count | manual (1) | manual (3) | manual (8) | **auto (5)** |
 
-Phase 4 reaches Phase 3's throughput with 2 fewer pods and no manual scaling:
-the HPA found 6 pods, close to the theoretical **3.4 pod** crossover, and kept
-CPU near its 70 % target instead of leaving ~50 % headroom idle on every pod.
+Phase 4 reaches Phase 3's throughput with 3 fewer pods and no manual scaling:
+the HPA found 5 pods, close to the theoretical **3.5 pod** crossover, and kept
+CPU near its 70 % target instead of leaving ~52 % headroom idle on every pod.
 
 ## Key takeaways
 
 1. **A single pod caps at its CPU limit.**  At 65 MiB/s load, 1 pod can absorb
-   only ~19 MiB/s.  Back-pressure prevents any event loss.
+   only ~18.55 MiB/s.  Back-pressure prevents any event loss.
 
 2. **L7 per-request routing distributes load uniformly.**  Because Nginx
    dispatches each HTTP request independently, every pod, old or newly
@@ -315,11 +314,11 @@ CPU near its 70 % target instead of leaving ~50 % headroom idle on every pod.
 
 3. **Adding pods beyond the saturation point removes the bottleneck entirely.**
    Phase 3 (8 pods) delivers the full 65 MiB/s with each pod at ~48 % CPU.
-   The bottleneck crossover is at ~3.4 pods for this load level.
+   The bottleneck crossover is at ~3.5 pods for this load level.
 
 4. **HPA finds the right pod count automatically.**  With HTTP + L7 routing,
    every new pod starts receiving traffic immediately after becoming Ready.
-   HPA converged at 6 pods in 182 s with zero manual intervention.
+   HPA converged at 5 pods in 167 s with zero manual intervention.
 
 ---
 
