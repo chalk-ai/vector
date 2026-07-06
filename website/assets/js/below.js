@@ -43,6 +43,7 @@ const animateEmbedDetails = () => {
   document.addEventListener("click", (e) => {
     const summary = e.target.closest(".embed-details > summary");
     if (!summary) return;
+    if (e.target.closest("a")) return;
 
     e.preventDefault();
 

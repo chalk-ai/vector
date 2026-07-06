@@ -50,7 +50,7 @@ customConfig:
       mode: tcp
       address: "consumer:9000"
       encoding:
-        codec: text
+        codec: json
 
 containerPorts:
   - name: http-in

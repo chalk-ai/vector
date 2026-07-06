@@ -88,6 +88,7 @@ through a plain ClusterIP Service.
 - `helm` ≥ 3.0
 - Cluster nodes with at least 1 allocatable CPU per Vector pod
 - `grpcurl` for metric collection
+- [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed — required for `kubectl top pods` and HPA CPU targets. K3s bundles it by default; on other clusters run `kubectl top nodes` to verify it is available before starting.
 
 ## How the metrics are collected
 

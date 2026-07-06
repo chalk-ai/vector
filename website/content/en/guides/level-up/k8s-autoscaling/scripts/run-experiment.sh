@@ -302,6 +302,7 @@ log "Applying producer manifest (lading, 65 MiB/s)..."
 kube apply -f "$PRODUCER_MANIFEST" >/dev/null 2>&1
 kube scale deployment producer -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
 kube rollout restart deployment producer -n "$NAMESPACE" >/dev/null 2>&1
+kube rollout status deployment/producer -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 log "Waiting 20 s for lading to initialise..."
 sleep 20
 
