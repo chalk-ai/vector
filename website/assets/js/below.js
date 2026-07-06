@@ -62,13 +62,17 @@ const animateEmbedDetails = () => {
         content.style.height = "0px";
       });
 
-      content.addEventListener("transitionend", function handler() {
-        details.open = false;
-        content.style.height = "";
-        content.style.transitionDuration = "";
-        if (chevron) chevron.style.transitionDuration = "";
-        content.removeEventListener("transitionend", handler);
-      }, { once: true });
+      content.addEventListener(
+        "transitionend",
+        function handler() {
+          details.open = false;
+          content.style.height = "";
+          content.style.transitionDuration = "";
+          if (chevron) chevron.style.transitionDuration = "";
+          content.removeEventListener("transitionend", handler);
+        },
+        { once: true }
+      );
     } else {
       details.open = true;
       const endHeight = content.scrollHeight;
@@ -82,12 +86,16 @@ const animateEmbedDetails = () => {
         content.style.height = `${endHeight}px`;
       });
 
-      content.addEventListener("transitionend", function handler() {
-        content.style.height = "";
-        content.style.transitionDuration = "";
-        if (chevron) chevron.style.transitionDuration = "";
-        content.removeEventListener("transitionend", handler);
-      }, { once: true });
+      content.addEventListener(
+        "transitionend",
+        function handler() {
+          content.style.height = "";
+          content.style.transitionDuration = "";
+          if (chevron) chevron.style.transitionDuration = "";
+          content.removeEventListener("transitionend", handler);
+        },
+        { once: true }
+      );
     }
   });
 };
