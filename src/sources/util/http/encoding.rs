@@ -177,6 +177,15 @@ fn decompress_snappy(
     Ok(decoded.into())
 }
 
+/// Cap on the initial buffer allocation when pre-sizing from a `Content-Length` header.
+/// Prevents stalling clients from reserving large amounts of memory before sending any bytes.
+#[cfg(any(
+    feature = "sources-utils-http-prelude",
+    feature = "sources-opentelemetry",
+    test
+))]
+const MAX_INITIAL_BODY_CAPACITY: usize = 8 * 1024 * 1024; // 8 MiB
+
 #[cfg(any(
     feature = "sources-utils-http-prelude",
     feature = "sources-opentelemetry",
@@ -195,7 +204,7 @@ where
 
     let capacity = declared_len
         .and_then(|len| usize::try_from(len).ok())
-        .map_or(0, |len| len.min(max_body_size));
+        .map_or(0, |len| len.min(max_body_size).min(MAX_INITIAL_BODY_CAPACITY));
     let mut bytes = BytesMut::with_capacity(capacity);
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|error| {
