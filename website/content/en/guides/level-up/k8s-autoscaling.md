@@ -335,7 +335,7 @@ are deployed, `run-experiment.sh` runs all four phases end to end: scaling the
 deployment, waiting for each rollout, measuring throughput, and creating the
 HPA for Phase 4, then prints a single results table.
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/scripts/run-experiment.sh" collapse="true" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/scripts/run-experiment.sh" open="false" >}}
 
 ```bash
 KUBECONFIG=/path/to/kubeconfig ./scripts/run-experiment.sh
