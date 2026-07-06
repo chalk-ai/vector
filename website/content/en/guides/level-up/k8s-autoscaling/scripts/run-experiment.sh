@@ -29,10 +29,10 @@ delete_hpa() {
   kube delete hpa vector -n "$NAMESPACE" 2>/dev/null || true
 }
 
-pick_pod() {
+pick_pods() {
   kube get pods -n "$NAMESPACE" -l app.kubernetes.io/name=vector \
     --field-selector=status.phase=Running \
-    -o jsonpath='{.items[0].metadata.name}'
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
 }
 
 # Average CPU % across all Vector pods via kubectl top. Outputs e.g. "97%".
@@ -45,12 +45,12 @@ avg_cpu_pct() {
       }'
 }
 
-# Measure throughput from one pod over a 30-second window.
-# Writes "<MiB/s> <ev/s>" to $TMPDIR_WORK/measure.txt
-measure_pod() {
-  local pod=$1 port=$2
+# Port-forward to a single pod on a given port; blocks until the gRPC health
+# check passes. Prints the port-forward PID to stdout.
+start_port_forward() {
+  local pod=$1 port=$2 logfile=$3
 
-  kube port-forward -n "$NAMESPACE" "pod/$pod" "${port}:8686" > "$TMPDIR_WORK/pf.log" 2>&1 &
+  kube port-forward -n "$NAMESPACE" "pod/$pod" "${port}:8686" > "$logfile" 2>&1 &
   local pf_pid=$!
 
   # Wait up to 10 s for the gRPC health check to pass.
@@ -58,39 +58,65 @@ measure_pod() {
   while ! grpcurl -plaintext "localhost:${port}" grpc.health.v1.Health/Check >/dev/null 2>&1; do
     if ! kill -0 "$pf_pid" 2>/dev/null; then
       log "ERROR: port-forward to pod/${pod}:8686 → ${port} died. Output:"
-      cat "$TMPDIR_WORK/pf.log" >&2
+      cat "$logfile" >&2
       exit 1
     fi
     i=$(( i + 1 ))
     if [[ "$i" -ge 20 ]]; then
       log "ERROR: gRPC health check on port ${port} not ready after 10 s."
-      cat "$TMPDIR_WORK/pf.log" >&2
+      cat "$logfile" >&2
       exit 1
     fi
     sleep 0.5
   done
 
+  echo "$pf_pid"
+}
+
+snapshot_pod() {
+  local port=$1 out=$2
   if ! grpcurl -plaintext -d '{}' "localhost:${port}" \
       vector.observability.v1.ObservabilityService/GetComponents \
-      > "$TMPDIR_WORK/t0.json" 2>&1; then
-    log "ERROR: grpcurl failed on port ${port} (pod=${pod}). Output:"
-    cat "$TMPDIR_WORK/t0.json" >&2
+      > "$out" 2>&1; then
+    log "ERROR: grpcurl failed on port ${port}. Output:"
+    cat "$out" >&2
     exit 1
   fi
+}
+
+# Measure aggregate throughput across all given pods over the same 30-second
+# window (each pod is sampled at t0 and t0+30s, then deltas are summed).
+# Writes "<MiB/s> <ev/s>" to $TMPDIR_WORK/measure.txt
+measure_pods() {
+  local pods=("$@")
+  local n=${#pods[@]}
+  local -a ports pids
+  local i
+
+  for ((i = 0; i < n; i++)); do
+    local port=$((18700 + i))
+    ports+=("$port")
+    pids+=("$(start_port_forward "${pods[$i]}" "$port" "$TMPDIR_WORK/pf-${i}.log")")
+  done
+
+  for ((i = 0; i < n; i++)); do
+    snapshot_pod "${ports[$i]}" "$TMPDIR_WORK/t0-${i}.json"
+  done
   sleep 30
-  if ! grpcurl -plaintext -d '{}' "localhost:${port}" \
-      vector.observability.v1.ObservabilityService/GetComponents \
-      > "$TMPDIR_WORK/t30.json" 2>&1; then
-    log "ERROR: grpcurl failed on port ${port} (pod=${pod}). Output:"
-    cat "$TMPDIR_WORK/t30.json" >&2
-    exit 1
-  fi
+  for ((i = 0; i < n; i++)); do
+    snapshot_pod "${ports[$i]}" "$TMPDIR_WORK/t30-${i}.json"
+  done
 
-  kill "$pf_pid" 2>/dev/null
-  wait "$pf_pid" 2>/dev/null || true
+  for pid in "${pids[@]}"; do
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+  done
 
-  python3 - "$TMPDIR_WORK/t0.json" "$TMPDIR_WORK/t30.json" <<'PYEOF'
+  python3 - "$n" "$TMPDIR_WORK" <<'PYEOF'
 import json, sys
+
+n = int(sys.argv[1])
+workdir = sys.argv[2]
 
 def get_bytes_events(path):
     try:
@@ -103,10 +129,16 @@ def get_bytes_events(path):
             return int(m.get('receivedBytesTotal', 0)), int(m.get('receivedEventsTotal', 0))
     return 0, 0
 
-b1, e1 = get_bytes_events(sys.argv[1])
-b2, e2 = get_bytes_events(sys.argv[2])
-mibps = (b2 - b1) / 30 / 1048576
-eps   = (e2 - e1) / 30
+total_bytes = 0
+total_events = 0
+for i in range(n):
+    b1, e1 = get_bytes_events(f"{workdir}/t0-{i}.json")
+    b2, e2 = get_bytes_events(f"{workdir}/t30-{i}.json")
+    total_bytes += b2 - b1
+    total_events += e2 - e1
+
+mibps = total_bytes / 30 / 1048576
+eps = total_events / 30
 print(f"{mibps:.2f} {eps:.0f}")
 PYEOF
 }
@@ -121,19 +153,14 @@ run_static_phase() {
   kube scale deployment vector -n "$NAMESPACE" --replicas="$replicas" >/dev/null 2>&1
   wait_rollout
 
-  local pod
-  pod=$(pick_pod)
-  log "Phase $phase: measuring $pod (20 s warmup + 30 s window)..."
+  log "Phase $phase: measuring all $replicas pod(s) (20 s warmup + 30 s window)..."
   sleep 20
 
-  local port=$((18680 + replicas))
-  measure_pod "$pod" "$port" > "$TMPDIR_WORK/measure.txt"
-  local mibps_per_pod eps_per_pod
-  read -r mibps_per_pod eps_per_pod < "$TMPDIR_WORK/measure.txt"
-
+  local -a pods
+  mapfile -t pods < <(pick_pods)
+  measure_pods "${pods[@]}" > "$TMPDIR_WORK/measure.txt"
   local total_mibps total_eps cpu
-  total_mibps=$(python3 -c "print(f'{float(\"$mibps_per_pod\") * $replicas:.2f}')")
-  total_eps=$(python3    -c "print(f'{float(\"$eps_per_pod\")   * $replicas:.0f}')")
+  read -r total_mibps total_eps < "$TMPDIR_WORK/measure.txt"
   cpu=$(avg_cpu_pct)
 
   {
@@ -150,17 +177,24 @@ run_hpa_phase() {
   log "Phase 4: resetting to 1 pod and creating HPA (70% target, max 8)..."
   delete_hpa
   kube scale deployment vector -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
+  wait_rollout
   kube autoscale deployment vector -n "$NAMESPACE" \
     --cpu-percent=70 --min=1 --max=8 >/dev/null 2>&1
 
   local start elapsed
   local last_replicas=1 scale_events=0 stable_count=0 last_stable=0
   local replicas="" cpu_avg=""
+  local max_elapsed=900
   start=$(date +%s)
 
-  log "Phase 4: watching HPA..."
+  log "Phase 4: watching HPA (timeout ${max_elapsed}s)..."
   while true; do
     elapsed=$(( $(date +%s) - start ))
+
+    if [[ "$elapsed" -ge "$max_elapsed" ]]; then
+      log "ERROR: HPA did not reach equilibrium within ${max_elapsed}s (last: ${last_replicas} pods, ${cpu_avg:-?}% CPU)."
+      exit 1
+    fi
 
     replicas=$(kube get hpa vector -n "$NAMESPACE" \
                -o jsonpath='{.status.currentReplicas}' 2>/dev/null || echo "")
@@ -195,13 +229,11 @@ run_hpa_phase() {
   done
 
   log "Phase 4: measuring equilibrium throughput..."
-  local pod
-  pod=$(pick_pod)
-  measure_pod "$pod" 28686 > "$TMPDIR_WORK/measure.txt"
-  local mibps_per_pod eps_per_pod total_mibps total_eps
-  read -r mibps_per_pod eps_per_pod < "$TMPDIR_WORK/measure.txt"
-  total_mibps=$(python3 -c "print(f'{float(\"$mibps_per_pod\") * $last_replicas:.2f}')")
-  total_eps=$(python3    -c "print(f'{float(\"$eps_per_pod\")   * $last_replicas:.0f}')")
+  local -a pods
+  mapfile -t pods < <(pick_pods)
+  measure_pods "${pods[@]}" > "$TMPDIR_WORK/measure.txt"
+  local total_mibps total_eps
+  read -r total_mibps total_eps < "$TMPDIR_WORK/measure.txt"
 
   {
     echo "PHASE4_MIBPS=${total_mibps}"

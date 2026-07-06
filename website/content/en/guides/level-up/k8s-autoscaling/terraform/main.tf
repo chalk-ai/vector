@@ -28,7 +28,7 @@ locals {
 
 resource "aws_key_pair" "this" {
   key_name   = local.cluster_name
-  public_key = file(var.ssh_public_key_path)
+  public_key = file(pathexpand(var.ssh_public_key_path))
   tags       = local.tags
 }
 
@@ -114,8 +114,13 @@ resource "aws_instance" "k3s" {
 
     # Install K3s — include the public IP in the TLS SAN so kubectl works directly
     # Poll IMDS until the public IP is available (avoids a race on first boot)
-    until PUBLIC_IP=$(curl -s --max-time 3 http://169.254.169.254/latest/meta-data/public-ipv4) && [ -n "$PUBLIC_IP" ]; do
+    IMDS_TOKEN=$(curl -sf --max-time 3 -X PUT "http://169.254.169.254/latest/api/token" \
+      -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+    until PUBLIC_IP=$(curl -sf --max-time 3 -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+        http://169.254.169.254/latest/meta-data/public-ipv4) && [ -n "$PUBLIC_IP" ]; do
       sleep 2
+      IMDS_TOKEN=$(curl -sf --max-time 3 -X PUT "http://169.254.169.254/latest/api/token" \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
     done
     # Write config.yaml so the SAN persists across cert regenerations
     mkdir -p /etc/rancher/k3s
