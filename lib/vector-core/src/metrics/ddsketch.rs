@@ -1263,8 +1263,9 @@ mod tests {
         // bucket to a point mass at its single finite edge. If the true values sit
         // far below that edge, the bucket-derived sum is wildly wrong even though
         // the exact sum was available on the source histogram all along.
-        let true_sum = 3.6182999999999996e-5; // two observations, ~1.8e-5 each
-        let true_count = 2;
+        let true_sum = 3.618_299_999_999_999_6e-5; // two observations, ~1.8e-5 each
+        let true_count: u64 = 2;
+        let true_count_u32 = u32::try_from(true_count).expect("count fits in u32");
 
         let metric = Metric::new(
             "source_send_latency_seconds",
@@ -1292,15 +1293,15 @@ mod tests {
         };
         let crate::event::metric::MetricSketch::AgentDDSketch(sketch) = sketch;
 
-        assert_eq!(sketch.count(), true_count as u32);
+        assert_eq!(sketch.count(), true_count_u32);
         assert_eq!(sketch.sum(), Some(true_sum));
-        assert_eq!(sketch.avg(), Some(true_sum / true_count as f64));
+        assert_eq!(sketch.avg(), Some(true_sum / f64::from(true_count_u32)));
 
         // Sanity check on the bug this guards against: naive bucket interpolation
         // for this exact case reconstructs a sum around 4.6e-2 (roughly 1260x too
         // large), because it collapses both observations to the bucket's upper
         // edge (~2.4e-4) instead of their true, much smaller values.
-        let naive_bucket_derived_sum = 0.000_244_140_625 * true_count as f64;
+        let naive_bucket_derived_sum = 0.000_244_140_625 * f64::from(true_count_u32);
         assert!(
             (naive_bucket_derived_sum - true_sum) / true_sum > 5.0,
             "sanity check: the naive interpolation should be off by a large margin \
