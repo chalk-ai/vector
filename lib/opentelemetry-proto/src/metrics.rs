@@ -332,7 +332,13 @@ impl HistogramMetric {
             MetricValue::AggregatedHistogram {
                 buckets,
                 count: self.point.count,
-                sum: self.point.sum.unwrap_or(0.0),
+                // OTLP histograms may legitimately omit `sum`. Represent that as
+                // `NaN` rather than `0.0`, since a silently defaulted zero would be
+                // indistinguishable from a genuinely all-zero histogram and would be
+                // treated as exact downstream (see
+                // `AgentDDSketch::transform_to_sketch`), corrupting otherwise-good
+                // bucket-derived estimates for any non-empty histogram that omits it.
+                sum: self.point.sum.unwrap_or(f64::NAN),
             },
         )
         .with_timestamp(timestamp)
@@ -388,7 +394,9 @@ impl ExpHistogramMetric {
             MetricValue::AggregatedHistogram {
                 buckets,
                 count: self.point.count,
-                sum: self.point.sum.unwrap_or(0.0),
+                // See the comment in `HistogramMetric::into_metric` above: `NaN`
+                // signals "unknown" rather than a misleading exact `0.0`.
+                sum: self.point.sum.unwrap_or(f64::NAN),
             },
         )
         .with_timestamp(timestamp)

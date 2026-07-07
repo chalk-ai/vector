@@ -799,21 +799,54 @@ impl AgentDDSketch {
                 }
                 Some(sketch)
             }
-            MetricValue::AggregatedHistogram { buckets, sum, .. } => {
+            MetricValue::AggregatedHistogram {
+                buckets,
+                sum,
+                count,
+            } => {
                 let delta_buckets = mem::take(buckets);
                 let true_sum = *sum;
+                let true_count = *count;
                 let mut sketch = AgentDDSketch::with_agent_defaults();
                 sketch.insert_interpolate_buckets(delta_buckets)?;
                 // Bucket interpolation can only guess where within each bucket the
                 // observations fell, which biases `sum`/`avg`. The source histogram
-                // already tracked the exact sum as each observation was recorded
-                // (see `Histogram::record`), so prefer it over the bucket-derived
-                // approximation. `count` is unaffected: interpolation always
-                // redistributes the exact input count, never losing or gaining any.
-                if sketch.count > 0 {
-                    sketch.avg = true_sum / f64::from(sketch.count);
+                // already tracked an exact running sum as each observation was
+                // recorded (see `Histogram::record`), so prefer it over the
+                // bucket-derived approximation -- but only when it's actually
+                // known. Some sources (e.g. OTLP histograms, which may legitimately
+                // omit `sum`) represent "unknown" as `NaN` rather than a misleading
+                // `0.0` (see `HistogramMetric::into_metric`), so fall back to the
+                // bucket-derived `sum`/`avg` in that case instead of overriding them
+                // with a fabricated zero.
+                if true_sum.is_finite() {
+                    // Some sources hand us fewer buckets than the histogram's true
+                    // total count -- notably Prometheus, which always drops its
+                    // cumulative "+Inf" bucket once converted to deltas -- so
+                    // `sketch.count` (built purely from the buckets we were actually
+                    // given) can undercount relative to `true_count`. Use the
+                    // histogram's own exact count as the divisor for `avg` instead of
+                    // `sketch.count`, to avoid inflating `avg` in that case. We
+                    // deliberately leave `sketch.count` itself untouched, since
+                    // `quantile()` relies on it lining up with the total weight
+                    // actually distributed across the sketch's bins.
+                    if true_count > 0 {
+                        // Real histogram counts are always far below 2^52, so this
+                        // conversion never loses meaningful precision in practice.
+                        #[allow(clippy::cast_precision_loss)]
+                        let true_count_f64 = true_count as f64;
+                        sketch.avg = true_sum / true_count_f64;
+                        // Interpolation places `min`/`max` at a bucket edge, which can
+                        // fall outside this exact `avg` -- most notably for the
+                        // unbounded first/last bucket, where interpolation collapses
+                        // to a single point mass. Extend them just enough to keep the
+                        // reported summary stats internally consistent
+                        // (`min <= avg <= max`).
+                        sketch.min = sketch.min.min(sketch.avg);
+                        sketch.max = sketch.max.max(sketch.avg);
+                    }
+                    sketch.sum = true_sum;
                 }
-                sketch.sum = true_sum;
                 Some(sketch)
             }
             // We can't convert from any other metric value.
@@ -1307,6 +1340,111 @@ mod tests {
             "sanity check: the naive interpolation should be off by a large margin \
              for this input, otherwise this test isn't exercising the bug"
         );
+
+        // Regression test: overriding `sum`/`avg` without adjusting `min`/`max`
+        // can report an impossible `avg` outside of `[min, max]`, since
+        // interpolation still places `min`/`max` at the bucket's edge
+        // (~2.4e-4) while the true `avg` (~1.8e-5) sits far below it.
+        let min = sketch.min().expect("non-empty sketch has a min");
+        let max = sketch.max().expect("non-empty sketch has a max");
+        let avg = sketch.avg().expect("non-empty sketch has an avg");
+        assert!(
+            min <= avg && avg <= max,
+            "summary stats must stay internally consistent: min={min} avg={avg} max={max}"
+        );
+    }
+
+    #[test]
+    fn test_transform_to_sketch_uses_true_count_when_buckets_undercount() {
+        // Regression test: Prometheus always drops its cumulative "+Inf" bucket
+        // once converted to per-bucket deltas (see
+        // `src/sources/prometheus/parser.rs`), so the buckets handed to
+        // `insert_interpolate_buckets` can sum to less than the histogram's true
+        // `count` whenever observations exist beyond the last finite bucket.
+        // `avg` must be derived from the histogram's own exact count, not from
+        // `sketch.count` (which only reflects the buckets we were actually given),
+        // otherwise it comes out too high.
+        let true_sum = 100.0;
+        let true_count: u64 = 10;
+        // Only 4 of the true 10 observations are represented in the (already
+        // "+Inf"-dropped) buckets we hand to the sketch.
+        let undercounted_buckets_count = 4;
+
+        let metric = Metric::new(
+            "source_send_latency_seconds",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets: vec![Bucket {
+                    upper_limit: 1.0,
+                    count: undercounted_buckets_count,
+                }],
+                count: true_count,
+                sum: true_sum,
+            },
+        );
+
+        let transformed =
+            AgentDDSketch::transform_to_sketch(metric).expect("valid histogram converts");
+        let MetricValue::Sketch { sketch } = transformed.value() else {
+            panic!("expected a sketch value");
+        };
+        let crate::event::metric::MetricSketch::AgentDDSketch(sketch) = sketch;
+
+        // Real histogram counts are always far below 2^52, so this conversion
+        // never loses meaningful precision in practice.
+        #[allow(clippy::cast_precision_loss)]
+        let true_count_f64 = true_count as f64;
+        assert_eq!(sketch.sum(), Some(true_sum));
+        assert_eq!(
+            sketch.avg(),
+            Some(true_sum / true_count_f64),
+            "avg must divide by the histogram's true count (10), not the \
+             undercounted bucket-derived count (4)"
+        );
+    }
+
+    #[test]
+    fn test_transform_to_sketch_skips_override_for_unknown_sum() {
+        // Regression test: OTLP histograms may legitimately omit `sum`, which the
+        // OTLP parser represents as `NaN` rather than a misleading `0.0` (see
+        // `HistogramMetric::into_metric`). When `sum` is unknown, we must not
+        // override the bucket-derived `sum`/`avg` with it, since doing so would
+        // corrupt an otherwise-reasonable estimate into a hard `sum = 0`/`avg = 0`
+        // for what may be a large, non-empty histogram.
+        let metric = Metric::new(
+            "unknown_sum_histogram",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets: vec![
+                    Bucket {
+                        upper_limit: 50.0,
+                        count: 50,
+                    },
+                    Bucket {
+                        upper_limit: 100.0,
+                        count: 50,
+                    },
+                ],
+                count: 100,
+                sum: f64::NAN,
+            },
+        );
+
+        let transformed =
+            AgentDDSketch::transform_to_sketch(metric).expect("valid histogram converts");
+        let MetricValue::Sketch { sketch } = transformed.value() else {
+            panic!("expected a sketch value");
+        };
+        let crate::event::metric::MetricSketch::AgentDDSketch(sketch) = sketch;
+
+        let sum = sketch.sum().expect("non-empty sketch has a sum");
+        let avg = sketch.avg().expect("non-empty sketch has an avg");
+        assert!(
+            sum.is_finite() && avg.is_finite(),
+            "sum/avg must fall back to the bucket-derived estimate, not NaN: sum={sum} avg={avg}"
+        );
+        assert_ne!(sum, 0.0, "sum must not be corrupted to a hard zero");
+        assert_ne!(avg, 0.0, "avg must not be corrupted to a hard zero");
     }
 
     #[test]
