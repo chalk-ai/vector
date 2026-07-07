@@ -152,7 +152,9 @@ resource "null_resource" "kubeconfig" {
   }
 
   provisioner "local-exec" {
-    command = <<-CMD
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-CMD
+      set -eo pipefail
       deadline=$(( $(date +%s) + 300 ))
       until ssh -i ${var.ssh_private_key_path} -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
           ubuntu@${aws_instance.k3s.public_ip} 'systemctl is-active k3s' 2>/dev/null; do
@@ -169,7 +171,13 @@ resource "null_resource" "kubeconfig" {
       ssh -i ${var.ssh_private_key_path} -o StrictHostKeyChecking=no \
           ubuntu@${aws_instance.k3s.public_ip} 'sudo cat /etc/rancher/k3s/k3s.yaml' \
         | sed 's|https://127.0.0.1|https://${aws_instance.k3s.public_ip}|g' \
-        > ${path.module}/kubeconfig
+        > ${path.module}/kubeconfig.tmp
+      if [ ! -s ${path.module}/kubeconfig.tmp ]; then
+        echo "ERROR: fetched kubeconfig is empty" >&2
+        rm -f ${path.module}/kubeconfig.tmp
+        exit 1
+      fi
+      mv ${path.module}/kubeconfig.tmp ${path.module}/kubeconfig
       chmod 600 ${path.module}/kubeconfig
     CMD
   }
