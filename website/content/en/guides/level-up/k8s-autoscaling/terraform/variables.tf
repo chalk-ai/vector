@@ -10,7 +10,7 @@ variable "cluster_suffix" {
 }
 
 variable "node_instance_type" {
-  type    = string
+  type = string
   # c5.4xlarge: 16 vCPU, 32 GiB
   # Phase 3 (8-worker) CPU requests: 8×1000m Vector + 5×100m producers + 500m consumer + ~200m system ≈ 9.2 vCPU
   default = "c5.4xlarge"
