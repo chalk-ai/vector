@@ -4,8 +4,9 @@ variable "region" {
 }
 
 variable "user_id" {
-  type    = string
-  default = "thomas"
+  type        = string
+  description = "Unique identifier used to namespace cluster resources (e.g. your username); override this if it might collide with another concurrent reproduction in the same AWS account"
+  default     = "changeme"
 }
 
 variable "node_instance_type" {
