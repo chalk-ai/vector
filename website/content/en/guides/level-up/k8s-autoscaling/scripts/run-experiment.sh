@@ -4,10 +4,17 @@
 # Usage:
 #   KUBECONFIG=/path/to/kubeconfig ./scripts/run-experiment.sh
 #
-# Requirements: kubectl, grpcurl, python3
+# Requirements: kubectl, grpcurl, python3, Bash >= 4
 # The script assumes namespace, consumer, ingress-nginx, and ingress are already deployed.
 
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "ERROR: this script requires Bash >= 4 (found ${BASH_VERSION})." >&2
+  echo "On macOS, the default /bin/bash is 3.2, install a newer version with" >&2
+  echo "'brew install bash' and re-run this script with it." >&2
+  exit 1
+fi
 
 NAMESPACE=vector-perf
 PRODUCER_MANIFEST=manifests/producer.yaml
