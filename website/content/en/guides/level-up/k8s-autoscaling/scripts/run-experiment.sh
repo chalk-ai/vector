@@ -258,9 +258,14 @@ run_hpa_phase() {
       stable_count=1
     fi
 
-    # Stable = same replica count for 75 s. CPU level is informational; the HPA
-    # has converged when it stops changing the replica count.
-    if [[ "$stable_count" -ge 5 && "$elapsed" -gt 120 && -n "$cpu_avg" ]]; then
+    # Fail fast if HPA is blocked at maxReplicas with persistently high CPU.
+    if [[ -n "$replicas" && "$replicas" == "8" && -n "$cpu_avg" && "$cpu_avg" -gt 77 && "$stable_count" -ge 3 ]]; then
+      log "ERROR: HPA at maxReplicas=8 with ${cpu_avg}% CPU > 77% — cannot scale further; the cluster may be undersized."
+      exit 1
+    fi
+
+    # Equilibrium: same replica count for 75 s AND CPU within the HPA target band (≤ 80%).
+    if [[ "$stable_count" -ge 5 && "$elapsed" -gt 120 && -n "$cpu_avg" && "$cpu_avg" -le 80 ]]; then
       log "Equilibrium: $replicas pods, ${cpu_avg}% CPU, ${elapsed}s elapsed."
       break
     fi

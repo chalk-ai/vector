@@ -153,8 +153,17 @@ resource "null_resource" "kubeconfig" {
 
   provisioner "local-exec" {
     command = <<-CMD
+      deadline=$(( $(date +%s) + 300 ))
       until ssh -i ${var.ssh_private_key_path} -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
           ubuntu@${aws_instance.k3s.public_ip} 'systemctl is-active k3s' 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+          echo "ERROR: K3s did not become active within 300 s. Dumping cloud-init log:" >&2
+          ssh -i ${var.ssh_private_key_path} -o StrictHostKeyChecking=no \
+            ubuntu@${aws_instance.k3s.public_ip} \
+            'sudo journalctl -u k3s --no-pager -n 50 2>/dev/null || sudo tail -50 /var/log/cloud-init-output.log' \
+            >&2 || true
+          exit 1
+        fi
         sleep 5
       done
       ssh -i ${var.ssh_private_key_path} -o StrictHostKeyChecking=no \
