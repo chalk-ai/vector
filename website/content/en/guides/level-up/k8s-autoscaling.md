@@ -241,26 +241,30 @@ pods limited to **1 vCPU / 2 GiB**.
 | - | ----------------- | ------------------ | ------------------ |
 | Throughput | 16.64 MiB/s | 50.47 MiB/s | **56.80 MiB/s** |
 | Events/s | 130,863 | 396,846 | 446,650 |
-| CPU per pod | 1000m (100 %) | ~1000m (100 %) | ~470m (47 %) |
+| CPU per pod | 1000m (100%) | ~1000m (100%) | ~470m (47%) |
 | Bottleneck | Vector CPU | Vector CPU | **None** |
 | Scaling vs Phase 1 | 1× | 3.03× | **3.41×** |
 
-The saturation crossover is 55 / 16.64 ≈ **3.3 pods** at 100 % CPU. At the
-70 % HPA target, the expected equilibrium is ⌈3.3 / 0.70⌉ = ⌈4.71⌉ = **5 pods**,
-exactly what Phase 4 measured.
-
 <!-- RESULTS-COMPARE-END -->
+
+We can see that 8 pods is too much, but 3 is too little. At 8 pods we're not
+properly utilizing each pod's capacity, at only 47% average CPU utilization.
 
 ## Phase 4 — HPA finds equilibrium
 
-With horizontal scaling working and the bottleneck removed, the HPA can now
-find the minimum pod count that keeps CPU below the 70 % target.
+Based on the results of Phase 1, we can estimate how many pods we would need
+to spin up to stay under CPU saturation while keeping some headroom. The
+saturation crossover is 55 / 16.64 ≈ **3.3 pods** at 100% CPU. At a 70%
+utilization target, the expected equilibrium is ⌈3.3 / 0.70⌉ = ⌈4.71⌉ = **5 pods**.
+
+We can now configure the HPA to find the minimum pod count that keeps CPU
+utilization below the 70% target.
 
 ```bash
 # Reset to 1 pod
 kubectl scale deployment vector -n vector-perf --replicas=1
 
-# Create HPA (70 % CPU target, 1–8 replicas)
+# Create HPA (70% CPU target, 1–8 replicas)
 kubectl autoscale deployment vector -n vector-perf \
   --cpu-percent=70 --min=1 --max=8
 ```
