@@ -17,17 +17,17 @@ Usage
 
     terraform init
 
-2. Apply, supplying the required variables (`my_cidr` has no default and
-   must be set; override `user_id` if you're sharing an AWS account with
-   another reproduction to avoid resource name collisions):
+2. Apply, supplying `my_cidr` (the only variable with no default):
 
     terraform apply \
-      -var="my_cidr=$(curl -s https://checkip.amazonaws.com)/32" \
-      -var="user_id=<your-username>"
+      -var="my_cidr=$(curl -s https://checkip.amazonaws.com)/32"
 
    This creates the key pair, security group, and EC2 instance, installs
    K3s/Helm/grpcurl via user-data, and fetches a kubeconfig once K3s is
-   active — written to ./kubeconfig (gitignored).
+   active — written to ./kubeconfig (gitignored). Resources are named
+   "vector-perf" by default; if you're sharing an AWS account with another
+   concurrent reproduction, also pass `-var="cluster_suffix=<your-username>"`
+   to avoid name collisions.
 
 3. Use the generated kubeconfig with kubectl/helm and with
    ../scripts/run-experiment.sh:
@@ -35,19 +35,20 @@ Usage
     export KUBECONFIG=$(terraform output -raw kubeconfig_path)
     kubectl get nodes
 
-4. When finished, tear the cluster down:
+4. When finished, tear the cluster down (pass the same `-var` flags you
+   applied with):
 
     terraform destroy \
-      -var="my_cidr=$(curl -s https://checkip.amazonaws.com)/32" \
-      -var="user_id=<your-username>"
+      -var="my_cidr=$(curl -s https://checkip.amazonaws.com)/32"
 
 Variables
 ---------
 See variables.tf for the full list and defaults. Notably:
 - `my_cidr`   — required; CIDR allowed to reach SSH (22) and the K3s API
                 (6443) on the instance, e.g. your own IP as a /32.
-- `user_id`   — namespaces all created resources (key pair, security
-                group, tags); change it if the default could collide with
-                another concurrent reproduction in the same account.
+- `cluster_suffix` — optional; appended to the default "vector-perf"
+                resource names (key pair, security group) if set. Only
+                needed to avoid collisions with another concurrent
+                reproduction in the same account.
 - `ssh_public_key_path` / `ssh_private_key_path` — default to
   ~/.ssh/vector_tests(.pub); point these at your own key pair if different.

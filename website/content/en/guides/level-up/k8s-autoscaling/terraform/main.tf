@@ -16,11 +16,10 @@ provider "aws" {
 }
 
 locals {
-  cluster_name = "vector-perf-${var.user_id}"
+  cluster_name = var.cluster_suffix != "" ? "vector-perf-${var.cluster_suffix}" : "vector-perf"
   tags = {
     Project   = "vector-perf"
     ManagedBy = "terraform"
-    User      = var.user_id
   }
 }
 

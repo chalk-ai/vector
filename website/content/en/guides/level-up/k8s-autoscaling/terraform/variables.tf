@@ -3,10 +3,10 @@ variable "region" {
   default = "us-east-1"
 }
 
-variable "user_id" {
+variable "cluster_suffix" {
   type        = string
-  description = "Unique identifier used to namespace cluster resources (e.g. your username); override this if it might collide with another concurrent reproduction in the same AWS account"
-  default     = "changeme"
+  description = "Optional suffix appended to cluster resource names (e.g. your username); set this if the default \"vector-perf\" name might collide with another concurrent reproduction in the same AWS account"
+  default     = ""
 }
 
 variable "node_instance_type" {
