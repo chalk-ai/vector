@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use ordered_float::NotNan;
-use vector_core::event::metric::TagValue;
+use vector_core::event::metric::{TagValue, TagValueSet};
 use vrl::value::{ObjectMap, Value};
 
-use super::proto::common::v1::{AnyValue, KeyValue, any_value::Value as PBValue};
+use super::proto::common::v1::{AnyValue, ArrayValue, KeyValue, any_value::Value as PBValue};
 
 impl From<PBValue> for Value {
     fn from(av: PBValue) -> Self {
@@ -37,11 +37,6 @@ impl From<PBValue> for TagValue {
     }
 }
 
-/// Converts a Vector `TagValue` to an OTLP `AnyValue`, always as a `StringValue`.
-///
-/// `TagValue` carries no signal about the attribute's original OTLP type (the decode
-/// direction already stringified it), so guessing at bool/int/float here would be wrong as
-/// often as right. `Bare` has no string representation, so it becomes an empty string.
 pub fn tag_value_to_any_value(tag: &TagValue) -> AnyValue {
     match tag {
         TagValue::Value(s) => AnyValue {
@@ -57,6 +52,18 @@ pub fn str_to_key_value(key: &str, val: &TagValue) -> KeyValue {
     KeyValue {
         key: key.to_string(),
         value: Some(tag_value_to_any_value(val)),
+    }
+}
+
+pub fn tag_set_to_any_value(tag_set: &TagValueSet) -> Option<AnyValue> {
+    match tag_set {
+        TagValueSet::Empty => None,
+        TagValueSet::Single(tag) => Some(tag_value_to_any_value(tag)),
+        TagValueSet::Set(set) => Some(AnyValue {
+            value: Some(PBValue::ArrayValue(ArrayValue {
+                values: set.iter().map(tag_value_to_any_value).collect(),
+            })),
+        }),
     }
 }
 

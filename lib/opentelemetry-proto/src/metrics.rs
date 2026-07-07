@@ -4,7 +4,7 @@ use vector_core::event::{
     metric::{Bucket, Quantile, TagValue, TagValueSet},
 };
 
-use super::common::str_to_key_value;
+use super::common::tag_set_to_any_value;
 use super::proto::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{InstrumentationScope, KeyValue},
@@ -444,9 +444,9 @@ impl ToF64 for Option<NumberDataPointValue> {
     }
 }
 
-/// The single/last value of a tag, preserving `TagValue::Bare` (unlike `MetricTags::iter_single`,
-/// which discards `Bare` tags because it goes through `TagValue::as_option`).
-fn representative_tag_value(tag_set: &TagValueSet) -> Option<TagValue> {
+/// Used only for the scalar `scope.name`/`scope.version` fields; multi-value attributes go through
+/// [`tag_set_to_any_value`].
+fn scalar_tag_value(tag_set: &TagValueSet) -> Option<TagValue> {
     match tag_set {
         TagValueSet::Empty => None,
         TagValueSet::Single(tag) => Some(tag.clone()),
@@ -464,20 +464,41 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
     let mut attributes = Vec::new();
 
     for (key, tag_set) in tags.iter_sets() {
-        let Some(value) = representative_tag_value(tag_set) else {
+        // `scope.name`/`scope.version` are scalar string fields on `InstrumentationScope`,
+        // not attributes, so they collapse to a single representative value.
+        if key == "scope.name" {
+            scope_name = scalar_tag_value(tag_set)
+                .and_then(TagValue::into_option)
+                .unwrap_or_default();
+            continue;
+        } else if key == "scope.version" {
+            scope_version = scalar_tag_value(tag_set)
+                .and_then(TagValue::into_option)
+                .unwrap_or_default();
+            continue;
+        }
+
+        // Multi-value tags are emitted as a single `KeyValue` with an `ArrayValue` (see
+        // `tag_set_to_any_value`) to honor OTLP's attribute-key-uniqueness contract.
+        let Some(value) = tag_set_to_any_value(tag_set) else {
             continue;
         };
 
         if let Some(rest) = key.strip_prefix("resource.") {
-            resource_attributes.push(str_to_key_value(rest, &value));
-        } else if key == "scope.name" {
-            scope_name = value.as_option().unwrap_or_default().to_string();
-        } else if key == "scope.version" {
-            scope_version = value.as_option().unwrap_or_default().to_string();
+            resource_attributes.push(KeyValue {
+                key: rest.to_string(),
+                value: Some(value),
+            });
         } else if let Some(rest) = key.strip_prefix("scope.") {
-            scope_attributes.push(str_to_key_value(rest, &value));
+            scope_attributes.push(KeyValue {
+                key: rest.to_string(),
+                value: Some(value),
+            });
         } else {
-            attributes.push(str_to_key_value(key, &value));
+            attributes.push(KeyValue {
+                key: key.to_string(),
+                value: Some(value),
+            });
         }
     }
 
@@ -639,6 +660,7 @@ pub fn metric_event_to_export_request(
 
 #[cfg(test)]
 mod tests {
+    use super::super::common::str_to_key_value;
     use super::super::proto::common::v1::any_value::Value as PBValue;
     use super::*;
     use vector_core::event::MetricValue;
