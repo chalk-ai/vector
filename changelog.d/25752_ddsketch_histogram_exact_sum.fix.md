@@ -1,0 +1,3 @@
+Fixed a bug where converting an `AggregatedHistogram` into a DDSketch (used by the `datadog_metrics` sink, among others) discarded the histogram's already-exact `sum`/`count` and instead rebuilt approximate versions purely from bucket-boundary interpolation. This broke down badly for buckets whose true values sit far from their edges, most notably the unbounded first/last bucket, where interpolation collapses to a point mass at a single finite edge — in some cases inflating the reported `avg`/`sum` by over 1000%. `sum`/`avg` are now taken directly from the source histogram's exact running totals instead of being reconstructed from bucket interpolation.
+
+authors: vladimir-dd gwenaskell
