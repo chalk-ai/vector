@@ -815,10 +815,9 @@ impl AgentDDSketch {
                 // recorded (see `Histogram::record`), so prefer it over the
                 // bucket-derived approximation -- but only when it's actually
                 // known. Some sources (e.g. OTLP histograms, which may legitimately
-                // omit `sum`) represent "unknown" as `NaN` rather than a misleading
-                // `0.0` (see `HistogramMetric::into_metric`), so fall back to the
-                // bucket-derived `sum`/`avg` in that case instead of overriding them
-                // with a fabricated zero.
+                // omit `sum`) represent "unknown" as `NaN` (see `HistogramMetric::into_metric`),
+                // so fall back to the bucket-derived `sum`/`avg` in that case instead of
+                // overriding them with a fabricated zero.
                 if true_sum.is_finite() {
                     // Some sources hand us fewer buckets than the histogram's true
                     // total count -- notably Prometheus, which always drops its
@@ -845,6 +844,7 @@ impl AgentDDSketch {
                         sketch.min = sketch.min.min(sketch.avg);
                         sketch.max = sketch.max.max(sketch.avg);
                     }
+
                     sketch.sum = true_sum;
                 }
                 Some(sketch)
