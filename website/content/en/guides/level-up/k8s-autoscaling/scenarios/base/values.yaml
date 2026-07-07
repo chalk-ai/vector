@@ -52,6 +52,13 @@ customConfig:
       encoding:
         codec: json
 
+readinessProbe:
+  grpc:
+    port: 8686
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3
+
 containerPorts:
   - name: http-in
     containerPort: 9000
