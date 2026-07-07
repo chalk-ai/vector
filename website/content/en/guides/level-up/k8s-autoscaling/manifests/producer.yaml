@@ -9,7 +9,7 @@
 #
 # bytes_per_second is set above what 1–3 Vector pods can handle (bottlenecked in
 # Phases 1–2) but below what 8 pods can handle, so Phase 3 has headroom and the
-# HPA can find a natural equilibrium in Phase 4 (~5 pods at 70% CPU).
+# HPA can find a natural equilibrium in Phase 4 (5 pods at ~70% CPU).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -22,7 +22,7 @@ data:
           seed: [2, 3, 5, 7, 11, 13, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59,
                  61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137]
           target_uri: "http://ingress-nginx-controller.ingress-nginx:80/"
-          bytes_per_second: "65 MiB"
+          bytes_per_second: "55 MiB"
           parallel_connections: 100
           method:
             post:

@@ -298,7 +298,7 @@ if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then
 fi
 log "Cluster reachable."
 
-log "Applying producer manifest (lading, 65 MiB/s)..."
+log "Applying producer manifest (lading, 55 MiB/s)..."
 kube apply -f "$PRODUCER_MANIFEST" >/dev/null 2>&1
 kube scale deployment producer -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
 kube rollout restart deployment producer -n "$NAMESPACE" >/dev/null 2>&1
