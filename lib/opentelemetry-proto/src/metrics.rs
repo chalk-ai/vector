@@ -520,6 +520,11 @@ fn metric_value_to_data(
     value: &MetricValue,
     kind: MetricKind,
     timestamp_ns: u64,
+    // For Delta points, the aggregation window is `(start_time, time]`. Computed from the
+    // metric's `interval_ms` by the caller (0 = unknown). Only the temporal data types (`Sum`,
+    // `Histogram`) use it; `Gauge` is instantaneous and `Summary` is non-temporal, so they leave
+    // `start_time_unix_nano` at 0.
+    start_time_ns: u64,
     attrs: Vec<KeyValue>,
 ) -> Result<Data, vector_common::Error> {
     let temporality = match kind {
@@ -531,7 +536,7 @@ fn metric_value_to_data(
         MetricValue::Counter { value } => Ok(Data::Sum(Sum {
             data_points: vec![NumberDataPoint {
                 attributes: attrs,
-                start_time_unix_nano: 0,
+                start_time_unix_nano: start_time_ns,
                 time_unix_nano: timestamp_ns,
                 value: Some(NumberDataPointValue::AsDouble(*value)),
                 exemplars: Vec::new(),
@@ -555,20 +560,28 @@ fn metric_value_to_data(
             count,
             sum,
         } => {
-            // The decode path treats the last bucket's `upper_limit` as `+Inf`, folding it into
-            // `bucket_counts` without a matching `explicit_bounds` entry. Mirror that here: emit
-            // all `N` counts but only the first `N-1` bounds, or OTLP receivers reject the point.
-            let bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
-            let explicit_bounds: Vec<f64> = buckets
-                .iter()
-                .take(buckets.len().saturating_sub(1))
-                .map(|bucket| bucket.upper_limit)
-                .collect();
+            let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
+            let has_inf_bucket = buckets
+                .last()
+                .is_some_and(|bucket| bucket.upper_limit == f64::INFINITY);
+
+            let explicit_bounds: Vec<f64> = if has_inf_bucket {
+                buckets
+                    .iter()
+                    .take(buckets.len() - 1)
+                    .map(|bucket| bucket.upper_limit)
+                    .collect()
+            } else {
+                let bounds = buckets.iter().map(|bucket| bucket.upper_limit).collect();
+                let observed: u64 = bucket_counts.iter().sum();
+                bucket_counts.push(count.saturating_sub(observed));
+                bounds
+            };
 
             Ok(Data::Histogram(Histogram {
                 data_points: vec![HistogramDataPoint {
                     attributes: attrs,
-                    start_time_unix_nano: 0,
+                    start_time_unix_nano: start_time_ns,
                     time_unix_nano: timestamp_ns,
                     count: *count,
                     sum: Some(*sum),
@@ -626,19 +639,55 @@ fn metric_value_to_data(
 pub fn metric_event_to_export_request(
     metric: MetricEvent,
 ) -> Result<ExportMetricsServiceRequest, vector_common::Error> {
-    let timestamp_ns = metric
+    // OTLP `time_unix_nano` is an unsigned nanosecond count since the Unix epoch, so it cannot
+    // represent pre-epoch instants. Vector metrics carry user-provided timestamps, so guard the
+    // conversion: fall back to `now` when absent, and reject (rather than silently wrapping a
+    // negative `i64` into a far-future `u64`) when the instant predates the epoch.
+    let timestamp_nanos = metric
         .timestamp()
         .and_then(|ts| ts.timestamp_nanos_opt())
-        .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0))
-        as u64;
+        .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0));
+    let timestamp_ns = u64::try_from(timestamp_nanos).map_err(|_| -> vector_common::Error {
+        format!(
+            "metric timestamp {timestamp_nanos} is before the Unix epoch and cannot be encoded as an OTLP nanosecond timestamp"
+        )
+        .into()
+    })?;
 
     let empty_tags = MetricTags::default();
     let tags = metric.tags().unwrap_or(&empty_tags);
     let (resource, scope, attributes) = split_metric_tags(tags);
 
     let kind = metric.kind();
-    let name = metric.name().to_string();
-    let data = metric_value_to_data(metric.value(), kind, timestamp_ns, attributes)?;
+
+    // For a Delta (Incremental) point, OTLP's aggregation window is `(start_time, time]`; derive
+    // the start from `interval_ms` so receivers can compute rates. Cumulative points leave the
+    // start at 0 (unknown) — there `start_time` is the reset point, not `time - interval`, and
+    // Vector does not carry that. `saturating_sub` guards the case where the interval predates the
+    // epoch offset.
+    let start_time_ns = match (kind, metric.interval_ms()) {
+        (MetricKind::Incremental, Some(interval)) => {
+            timestamp_ns.saturating_sub(u64::from(interval.get()) * 1_000_000)
+        }
+        _ => 0,
+    };
+
+    // A native Vector metric's identity is `(namespace, name)`; other sinks fold the namespace into
+    // the emitted series name (e.g. Prometheus joins them with `_`). OTLP has no dedicated namespace
+    // field, so join with `.` (its idiomatic namespace separator) to keep e.g. `vector.requests` and
+    // `app.requests` distinct instead of both collapsing to `requests`. Decode does not split this
+    // back out, so the namespace survives as a name prefix rather than a separate field.
+    let name = match metric.namespace() {
+        Some(namespace) => format!("{namespace}.{}", metric.name()),
+        None => metric.name().to_string(),
+    };
+    let data = metric_value_to_data(
+        metric.value(),
+        kind,
+        timestamp_ns,
+        start_time_ns,
+        attributes,
+    )?;
 
     Ok(ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
@@ -683,7 +732,7 @@ mod tests {
         )
         .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
 
-        let data = metric_value_to_data(metric.value(), metric.kind(), 1_000, Vec::new())
+        let data = metric_value_to_data(metric.value(), metric.kind(), 1_000, 0, Vec::new())
             .expect("counter should encode");
 
         match data {
@@ -706,7 +755,7 @@ mod tests {
             MetricKind::Absolute,
             MetricValue::Counter { value: 1.0 },
         );
-        let data = metric_value_to_data(metric.value(), metric.kind(), 1, Vec::new()).unwrap();
+        let data = metric_value_to_data(metric.value(), metric.kind(), 1, 0, Vec::new()).unwrap();
         match data {
             Data::Sum(sum) => assert_eq!(
                 sum.aggregation_temporality,
@@ -714,6 +763,106 @@ mod tests {
             ),
             other => panic!("expected Data::Sum, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn incremental_interval_sets_delta_start_time() {
+        use std::num::NonZeroU32;
+
+        let time_ns = 1_000_000_000; // 1s
+        let interval_ns = 10_000_000; // 10ms
+
+        let sum_point = |metric: MetricEvent| {
+            let request = metric_event_to_export_request(metric).expect("counter should encode");
+            match request.resource_metrics[0].scope_metrics[0].metrics[0]
+                .data
+                .clone()
+                .unwrap()
+            {
+                Data::Sum(sum) => sum.data_points.into_iter().next().unwrap(),
+                other => panic!("expected Data::Sum, got {other:?}"),
+            }
+        };
+
+        // Delta (Incremental) with an interval derives the aggregation window start.
+        let point = sum_point(
+            MetricEvent::new(
+                "requests",
+                MetricKind::Incremental,
+                MetricValue::Counter { value: 1.0 },
+            )
+            .with_timestamp(Some(Utc.timestamp_nanos(time_ns)))
+            .with_interval_ms(NonZeroU32::new(10)),
+        );
+        assert_eq!(point.time_unix_nano, time_ns as u64);
+        assert_eq!(point.start_time_unix_nano, (time_ns - interval_ns) as u64);
+
+        // Cumulative (Absolute) must NOT derive a start time even if an interval is present.
+        let point = sum_point(
+            MetricEvent::new(
+                "requests",
+                MetricKind::Absolute,
+                MetricValue::Counter { value: 1.0 },
+            )
+            .with_timestamp(Some(Utc.timestamp_nanos(time_ns)))
+            .with_interval_ms(NonZeroU32::new(10)),
+        );
+        assert_eq!(point.start_time_unix_nano, 0);
+
+        // Incremental without an interval leaves the start unset.
+        let point = sum_point(
+            MetricEvent::new(
+                "requests",
+                MetricKind::Incremental,
+                MetricValue::Counter { value: 1.0 },
+            )
+            .with_timestamp(Some(Utc.timestamp_nanos(time_ns))),
+        );
+        assert_eq!(point.start_time_unix_nano, 0);
+    }
+
+    #[test]
+    fn pre_epoch_timestamp_is_rejected() {
+        // A pre-epoch instant yields a negative nanosecond count; it must be rejected rather than
+        // wrapping into a far-future unsigned OTLP timestamp.
+        let metric = MetricEvent::new(
+            "requests",
+            MetricKind::Incremental,
+            MetricValue::Counter { value: 1.0 },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(-1_000)));
+
+        assert!(metric_event_to_export_request(metric).is_err());
+    }
+
+    #[test]
+    fn namespace_is_prefixed_onto_metric_name() {
+        // Namespaced metrics must keep distinct OTLP identities instead of colliding on the bare
+        // name. The namespace is joined with `.` (OTLP's namespace separator).
+        let metric = MetricEvent::new(
+            "requests",
+            MetricKind::Absolute,
+            MetricValue::Gauge { value: 1.0 },
+        )
+        .with_namespace(Some("vector"));
+
+        let request = metric_event_to_export_request(metric).expect("should encode");
+        assert_eq!(
+            request.resource_metrics[0].scope_metrics[0].metrics[0].name,
+            "vector.requests"
+        );
+
+        // No namespace leaves the bare name untouched.
+        let metric = MetricEvent::new(
+            "requests",
+            MetricKind::Absolute,
+            MetricValue::Gauge { value: 1.0 },
+        );
+        let request = metric_event_to_export_request(metric).expect("should encode");
+        assert_eq!(
+            request.resource_metrics[0].scope_metrics[0].metrics[0].name,
+            "requests"
+        );
     }
 
     #[test]
@@ -725,7 +874,8 @@ mod tests {
             MetricValue::Gauge { value: 12.5 },
         );
 
-        let data = metric_value_to_data(metric.value(), metric.kind(), 5, attrs.clone()).unwrap();
+        let data =
+            metric_value_to_data(metric.value(), metric.kind(), 5, 0, attrs.clone()).unwrap();
         let point = number_data_point(data);
         assert_eq!(point.value, Some(NumberDataPointValue::AsDouble(12.5)));
         assert_eq!(point.attributes, attrs);
@@ -757,15 +907,54 @@ mod tests {
             },
         );
 
-        let data = metric_value_to_data(metric.value(), metric.kind(), 42, Vec::new()).unwrap();
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
         match data {
             Data::Histogram(histogram) => {
                 let point = histogram.data_points.into_iter().next().unwrap();
                 assert_eq!(point.bucket_counts, vec![1, 2, 3]);
-                // Trailing +Inf bound must be dropped: N counts, N-1 bounds.
+                // Explicit +Inf bucket: drop only its bound, keep every count. N counts, N-1 bounds.
                 assert_eq!(point.explicit_bounds, vec![1.0, 2.0]);
                 assert_eq!(point.count, 6);
                 assert_eq!(point.sum, Some(10.0));
+            }
+            other => panic!("expected Data::Histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prometheus_histogram_appends_overflow_bucket() {
+        // Prometheus-derived histograms carry only finite bounds; `count` (6) exceeds the sum of
+        // bucket counts (1 + 2 = 3), the extra 3 being observations above the last bound.
+        let buckets = vec![
+            Bucket {
+                upper_limit: 1.0,
+                count: 1,
+            },
+            Bucket {
+                upper_limit: 2.0,
+                count: 2,
+            },
+        ];
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count: 6,
+                sum: 10.0,
+            },
+        );
+
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
+        match data {
+            Data::Histogram(histogram) => {
+                let point = histogram.data_points.into_iter().next().unwrap();
+                // Every finite bound is kept; the overflow (6 - 3 = 3) becomes the +Inf bucket.
+                assert_eq!(point.explicit_bounds, vec![1.0, 2.0]);
+                assert_eq!(point.bucket_counts, vec![1, 2, 3]);
+                // OTLP invariant: bounds.len() + 1 == counts.len(), and count == sum(counts).
+                assert_eq!(point.explicit_bounds.len() + 1, point.bucket_counts.len());
+                assert_eq!(point.count, point.bucket_counts.iter().sum::<u64>());
             }
             other => panic!("expected Data::Histogram, got {other:?}"),
         }
@@ -793,7 +982,7 @@ mod tests {
             },
         );
 
-        let data = metric_value_to_data(metric.value(), metric.kind(), 1, Vec::new()).unwrap();
+        let data = metric_value_to_data(metric.value(), metric.kind(), 1, 0, Vec::new()).unwrap();
         match data {
             Data::Summary(summary) => {
                 let point = summary.data_points.into_iter().next().unwrap();
