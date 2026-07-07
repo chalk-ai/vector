@@ -799,10 +799,21 @@ impl AgentDDSketch {
                 }
                 Some(sketch)
             }
-            MetricValue::AggregatedHistogram { buckets, .. } => {
+            MetricValue::AggregatedHistogram { buckets, sum, .. } => {
                 let delta_buckets = mem::take(buckets);
+                let true_sum = *sum;
                 let mut sketch = AgentDDSketch::with_agent_defaults();
                 sketch.insert_interpolate_buckets(delta_buckets)?;
+                // Bucket interpolation can only guess where within each bucket the
+                // observations fell, which biases `sum`/`avg`. The source histogram
+                // already tracked the exact sum as each observation was recorded
+                // (see `Histogram::record`), so prefer it over the bucket-derived
+                // approximation. `count` is unaffected: interpolation always
+                // redistributes the exact input count, never losing or gaining any.
+                if sketch.count > 0 {
+                    sketch.avg = true_sum / f64::from(sketch.count);
+                }
+                sketch.sum = true_sum;
                 Some(sketch)
             }
             // We can't convert from any other metric value.
@@ -1108,7 +1119,7 @@ fn round_to_even(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{AGENT_DEFAULT_EPS, AgentDDSketch, Config, MAX_KEY, round_to_even};
-    use crate::event::metric::Bucket;
+    use crate::event::{Metric, MetricKind, MetricValue, metric::Bucket};
 
     const FLOATING_POINT_ACCEPTABLE_ERROR: f64 = 1.0e-10;
 
@@ -1243,6 +1254,58 @@ mod tests {
 
         // Assert the sketch remains unchanged.
         assert_eq!(sketch, AgentDDSketch::with_agent_defaults());
+    }
+
+    #[test]
+    fn test_transform_to_sketch_preserves_exact_sum_for_unbounded_first_bucket() {
+        // Regression test: when nearly all observations fall in the first bucket
+        // (which has no explicit lower bound), bucket interpolation collapses that
+        // bucket to a point mass at its single finite edge. If the true values sit
+        // far below that edge, the bucket-derived sum is wildly wrong even though
+        // the exact sum was available on the source histogram all along.
+        let true_sum = 3.6182999999999996e-5; // two observations, ~1.8e-5 each
+        let true_count = 2;
+
+        let metric = Metric::new(
+            "source_send_latency_seconds",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets: vec![
+                    Bucket {
+                        upper_limit: 0.000_244_140_625,
+                        count: true_count,
+                    },
+                    Bucket {
+                        upper_limit: f64::INFINITY,
+                        count: 0,
+                    },
+                ],
+                count: true_count,
+                sum: true_sum,
+            },
+        );
+
+        let transformed =
+            AgentDDSketch::transform_to_sketch(metric).expect("valid histogram converts");
+        let MetricValue::Sketch { sketch } = transformed.value() else {
+            panic!("expected a sketch value");
+        };
+        let crate::event::metric::MetricSketch::AgentDDSketch(sketch) = sketch;
+
+        assert_eq!(sketch.count(), true_count as u32);
+        assert_eq!(sketch.sum(), Some(true_sum));
+        assert_eq!(sketch.avg(), Some(true_sum / true_count as f64));
+
+        // Sanity check on the bug this guards against: naive bucket interpolation
+        // for this exact case reconstructs a sum around 4.6e-2 (roughly 1260x too
+        // large), because it collapses both observations to the bucket's upper
+        // edge (~2.4e-4) instead of their true, much smaller values.
+        let naive_bucket_derived_sum = 0.000_244_140_625 * true_count as f64;
+        assert!(
+            (naive_bucket_derived_sum - true_sum) / true_sum > 5.0,
+            "sanity check: the naive interpolation should be off by a large margin \
+             for this input, otherwise this test isn't exercising the bug"
+        );
     }
 
     #[test]
