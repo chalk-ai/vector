@@ -2,7 +2,7 @@
 #
 #   helm upgrade --install vector vectordotdev/vector \
 #     --namespace vector-perf \
-#     -f scenarios/base/values.yaml \
+#     -f values.yaml \
 #     --set replicas=<n>
 #
 # Only the initial install (replicas=1) goes through Helm. After that, every

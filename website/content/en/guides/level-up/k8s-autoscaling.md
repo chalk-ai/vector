@@ -145,10 +145,10 @@ Vector is installed with the shared base Helm values, which configure the
 `http_server` source, the `parse_regex!` transform, and the `socket` sink to
 the consumer:
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/scenarios/base/values.yaml" dir="true" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/values.yaml" dir="true" >}}
 
 ```bash
-helm upgrade --install vector vectordotdev/vector --namespace vector-perf -f scenarios/base/values.yaml --set replicas=1
+helm upgrade --install vector vectordotdev/vector --namespace vector-perf -f values.yaml --set replicas=1
 
 kubectl apply -f manifests/ingress.yaml
 kubectl apply -f manifests/producer.yaml
