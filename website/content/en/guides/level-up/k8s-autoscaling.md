@@ -148,7 +148,7 @@ the consumer:
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/values.yaml" dir="true" >}}
 
 ```bash
-helm upgrade --install vector vectordotdev/vector --namespace vector-perf -f values.yaml --set replicas=1
+helm upgrade --install vector vectordotdev/vector --namespace vector-perf --version 0.56.0 -f values.yaml --set replicas=1
 
 kubectl apply -f manifests/ingress.yaml
 kubectl apply -f manifests/producer.yaml
