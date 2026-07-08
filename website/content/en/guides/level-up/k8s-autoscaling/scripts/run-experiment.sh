@@ -17,7 +17,7 @@ if (( BASH_VERSINFO[0] < 4 )); then
 fi
 
 NAMESPACE=vector-perf
-PRODUCER_MANIFEST=manifests/producer.yaml
+PRODUCER_MANIFEST="$(dirname "${BASH_SOURCE[0]}")/../manifests/producer.yaml"
 TMPDIR_WORK=/tmp/vec-experiment-$$
 mkdir -p "$TMPDIR_WORK"
 trap 'rm -rf "$TMPDIR_WORK"; pkill -f "kubectl port-forward.*vector-perf.*pod/" 2>/dev/null || true' EXIT
