@@ -516,137 +516,182 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
     (resource, scope, attributes)
 }
 
+struct OTLPDataConverter {
+    kind: MetricKind,
+    timestamp_ns: u64,
+    start_time_ns: u64,
+    attrs: Vec<KeyValue>,
+    temporality: i32,
+}
+
+impl OTLPDataConverter {
+    fn new(kind: MetricKind, timestamp_ns: u64, start_time_ns: u64, attrs: Vec<KeyValue>) -> Self {
+        let temporality = match kind {
+            MetricKind::Incremental => AggregationTemporality::Delta,
+            MetricKind::Absolute => AggregationTemporality::Cumulative,
+        } as i32;
+        Self {
+            kind,
+            timestamp_ns,
+            start_time_ns,
+            attrs,
+            temporality,
+        }
+    }
+
+    fn metric_value_to_data(&self, value: &MetricValue) -> Result<Data, vector_common::Error> {
+        match value {
+            MetricValue::Counter { value } => Ok(self.counter(value)),
+            MetricValue::Gauge { value } => Ok(self.gauge(value)),
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count,
+                sum,
+            } => Ok(self.aggregated_histogram(buckets, count, sum)),
+            MetricValue::AggregatedSummary {
+                quantiles,
+                count,
+                sum,
+            } => Ok(self.aggregated_summary(quantiles, count, sum)),
+            MetricValue::Set { .. } => {
+                Err("OTLP serializer does not support Set (statsd-style) metric values".into())
+            }
+            MetricValue::Distribution { .. } => Err(
+                "OTLP serializer does not support Distribution (un-aggregated) metric values"
+                    .into(),
+            ),
+            MetricValue::Sketch { .. } => {
+                Err("OTLP serializer does not support Sketch (DDSketch) metric values".into())
+            }
+        }
+    }
+    fn counter(&self, value: &f64) -> Data {
+        Data::Sum(Sum {
+            data_points: vec![NumberDataPoint {
+                attributes: self.attrs.clone(),
+                start_time_unix_nano: self.start_time_ns,
+                time_unix_nano: self.timestamp_ns,
+                value: Some(NumberDataPointValue::AsDouble(*value)),
+                exemplars: Vec::new(),
+                flags: 0,
+            }],
+            aggregation_temporality: self.temporality,
+            is_monotonic: true,
+        })
+    }
+
+    fn gauge(&self, value: &f64) -> Data {
+        let attrs = self.attrs.clone();
+        match self.kind {
+            MetricKind::Absolute => Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    attributes: attrs,
+                    start_time_unix_nano: 0,
+                    time_unix_nano: self.timestamp_ns,
+                    value: Some(NumberDataPointValue::AsDouble(*value)),
+                    exemplars: Vec::new(),
+                    flags: 0,
+                }],
+            }),
+            MetricKind::Incremental => Data::Sum(Sum {
+                data_points: vec![NumberDataPoint {
+                    attributes: attrs,
+                    start_time_unix_nano: self.start_time_ns,
+                    time_unix_nano: self.timestamp_ns,
+                    value: Some(NumberDataPointValue::AsDouble(*value)),
+                    exemplars: Vec::new(),
+                    flags: 0,
+                }],
+                aggregation_temporality: self.temporality,
+                is_monotonic: false,
+            }),
+        }
+    }
+
+    fn aggregated_histogram(&self, buckets: &[Bucket], count: &u64, sum: &f64) -> Data {
+        let attrs = self.attrs.clone();
+        let mut buckets = buckets.to_owned();
+        buckets.sort_by(|a, b| a.upper_limit.total_cmp(&b.upper_limit));
+
+        let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
+        let has_inf_bucket = buckets
+            .last()
+            .is_some_and(|bucket| bucket.upper_limit == f64::INFINITY);
+
+        let explicit_bounds: Vec<f64> = if has_inf_bucket {
+            buckets
+                .iter()
+                .take(buckets.len() - 1)
+                .map(|bucket| bucket.upper_limit)
+                .collect()
+        } else {
+            let bounds = buckets.iter().map(|bucket| bucket.upper_limit).collect();
+            let observed: u64 = bucket_counts.iter().sum();
+            bucket_counts.push(count.saturating_sub(observed));
+            bounds
+        };
+
+        Data::Histogram(Histogram {
+            data_points: vec![HistogramDataPoint {
+                attributes: attrs,
+                start_time_unix_nano: self.start_time_ns,
+                time_unix_nano: self.timestamp_ns,
+                count: *count,
+                sum: Some(*sum),
+                bucket_counts,
+                explicit_bounds,
+                exemplars: Vec::new(),
+                flags: 0,
+                min: None,
+                max: None,
+            }],
+            aggregation_temporality: self.temporality,
+        })
+    }
+
+    fn aggregated_summary(&self, quantiles: &[Quantile], count: &u64, sum: &f64) -> Data {
+        let quantile_values = quantiles
+            .iter()
+            .map(|quantile| ValueAtQuantile {
+                quantile: quantile.quantile,
+                value: quantile.value,
+            })
+            .collect();
+
+        Data::Summary(Summary {
+            data_points: vec![SummaryDataPoint {
+                attributes: self.attrs.clone(),
+                start_time_unix_nano: 0,
+                time_unix_nano: self.timestamp_ns,
+                count: *count,
+                sum: *sum,
+                quantile_values,
+                flags: 0,
+            }],
+        })
+    }
+}
 fn metric_value_to_data(
     value: &MetricValue,
     kind: MetricKind,
     timestamp_ns: u64,
-    // For Delta points, the aggregation window is `(start_time, time]`. Computed from the
-    // metric's `interval_ms` by the caller (0 = unknown). Only the temporal data types (`Sum`,
-    // `Histogram`) use it; `Gauge` is instantaneous and `Summary` is non-temporal, so they leave
-    // `start_time_unix_nano` at 0.
     start_time_ns: u64,
     attrs: Vec<KeyValue>,
 ) -> Result<Data, vector_common::Error> {
-    let temporality = match kind {
-        MetricKind::Incremental => AggregationTemporality::Delta,
-        MetricKind::Absolute => AggregationTemporality::Cumulative,
-    } as i32;
-
-    match value {
-        MetricValue::Counter { value } => Ok(Data::Sum(Sum {
-            data_points: vec![NumberDataPoint {
-                attributes: attrs,
-                start_time_unix_nano: start_time_ns,
-                time_unix_nano: timestamp_ns,
-                value: Some(NumberDataPointValue::AsDouble(*value)),
-                exemplars: Vec::new(),
-                flags: 0,
-            }],
-            aggregation_temporality: temporality,
-            is_monotonic: true,
-        })),
-        MetricValue::Gauge { value } => Ok(Data::Gauge(Gauge {
-            data_points: vec![NumberDataPoint {
-                attributes: attrs,
-                start_time_unix_nano: 0,
-                time_unix_nano: timestamp_ns,
-                value: Some(NumberDataPointValue::AsDouble(*value)),
-                exemplars: Vec::new(),
-                flags: 0,
-            }],
-        })),
-        MetricValue::AggregatedHistogram {
-            buckets,
-            count,
-            sum,
-        } => {
-            let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
-            let has_inf_bucket = buckets
-                .last()
-                .is_some_and(|bucket| bucket.upper_limit == f64::INFINITY);
-
-            let explicit_bounds: Vec<f64> = if has_inf_bucket {
-                buckets
-                    .iter()
-                    .take(buckets.len() - 1)
-                    .map(|bucket| bucket.upper_limit)
-                    .collect()
-            } else {
-                let bounds = buckets.iter().map(|bucket| bucket.upper_limit).collect();
-                let observed: u64 = bucket_counts.iter().sum();
-                bucket_counts.push(count.saturating_sub(observed));
-                bounds
-            };
-
-            Ok(Data::Histogram(Histogram {
-                data_points: vec![HistogramDataPoint {
-                    attributes: attrs,
-                    start_time_unix_nano: start_time_ns,
-                    time_unix_nano: timestamp_ns,
-                    count: *count,
-                    sum: Some(*sum),
-                    bucket_counts,
-                    explicit_bounds,
-                    exemplars: Vec::new(),
-                    flags: 0,
-                    min: None,
-                    max: None,
-                }],
-                aggregation_temporality: temporality,
-            }))
-        }
-        MetricValue::AggregatedSummary {
-            quantiles,
-            count,
-            sum,
-        } => {
-            let quantile_values = quantiles
-                .iter()
-                .map(|quantile| ValueAtQuantile {
-                    quantile: quantile.quantile,
-                    value: quantile.value,
-                })
-                .collect();
-
-            Ok(Data::Summary(Summary {
-                data_points: vec![SummaryDataPoint {
-                    attributes: attrs,
-                    start_time_unix_nano: 0,
-                    time_unix_nano: timestamp_ns,
-                    count: *count,
-                    sum: *sum,
-                    quantile_values,
-                    flags: 0,
-                }],
-            }))
-        }
-        MetricValue::Set { .. } => {
-            Err("OTLP serializer does not support Set (statsd-style) metric values".into())
-        }
-        MetricValue::Distribution { .. } => Err(
-            "OTLP serializer does not support Distribution (un-aggregated) metric values".into(),
-        ),
-        MetricValue::Sketch { .. } => {
-            Err("OTLP serializer does not support Sketch (DDSketch) metric values".into())
-        }
-    }
+    OTLPDataConverter::new(kind, timestamp_ns, start_time_ns, attrs.clone())
+        .metric_value_to_data(value)
 }
 
-/// Converts a native Vector `Metric` event into an OTLP `ExportMetricsServiceRequest`.
-///
-/// This is the inverse of `ResourceMetrics::into_event_iter`. See the module-level docs for
-/// which `MetricValue` variants are supported and why the reverse direction is not lossless.
 pub fn metric_event_to_export_request(
     metric: MetricEvent,
 ) -> Result<ExportMetricsServiceRequest, vector_common::Error> {
-    // OTLP `time_unix_nano` is an unsigned nanosecond count since the Unix epoch, so it cannot
-    // represent pre-epoch instants. Vector metrics carry user-provided timestamps, so guard the
-    // conversion: fall back to `now` when absent, and reject (rather than silently wrapping a
-    // negative `i64` into a far-future `u64`) when the instant predates the epoch.
     let timestamp_nanos = metric
         .timestamp()
-        .and_then(|ts| ts.timestamp_nanos_opt())
-        .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        .ok_or_else(|| -> vector_common::Error { "metric is missing a timestamp".into() })?
+        .timestamp_nanos_opt()
+        .ok_or_else(|| -> vector_common::Error {
+            "metric timestamp cannot be represented as nanoseconds".into()
+        })?;
     let timestamp_ns = u64::try_from(timestamp_nanos).map_err(|_| -> vector_common::Error {
         format!(
             "metric timestamp {timestamp_nanos} is before the Unix epoch and cannot be encoded as an OTLP nanosecond timestamp"
@@ -660,11 +705,6 @@ pub fn metric_event_to_export_request(
 
     let kind = metric.kind();
 
-    // For a Delta (Incremental) point, OTLP's aggregation window is `(start_time, time]`; derive
-    // the start from `interval_ms` so receivers can compute rates. Cumulative points leave the
-    // start at 0 (unknown) — there `start_time` is the reset point, not `time - interval`, and
-    // Vector does not carry that. `saturating_sub` guards the case where the interval predates the
-    // epoch offset.
     let start_time_ns = match (kind, metric.interval_ms()) {
         (MetricKind::Incremental, Some(interval)) => {
             timestamp_ns.saturating_sub(u64::from(interval.get()) * 1_000_000)
@@ -672,11 +712,6 @@ pub fn metric_event_to_export_request(
         _ => 0,
     };
 
-    // A native Vector metric's identity is `(namespace, name)`; other sinks fold the namespace into
-    // the emitted series name (e.g. Prometheus joins them with `_`). OTLP has no dedicated namespace
-    // field, so join with `.` (its idiomatic namespace separator) to keep e.g. `vector.requests` and
-    // `app.requests` distinct instead of both collapsing to `requests`. Decode does not split this
-    // back out, so the namespace survives as a name prefix rather than a separate field.
     let name = match metric.namespace() {
         Some(namespace) => format!("{namespace}.{}", metric.name()),
         None => metric.name().to_string(),
@@ -1068,7 +1103,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_fallback() {
+    fn missing_timestamp_is_rejected() {
         let metric = MetricEvent::new(
             "cpu",
             MetricKind::Absolute,
@@ -1076,12 +1111,7 @@ mod tests {
         );
         assert!(metric.timestamp().is_none());
 
-        let request = metric_event_to_export_request(metric).unwrap();
-        let data = request.resource_metrics[0].scope_metrics[0].metrics[0]
-            .data
-            .clone()
-            .unwrap();
-        let point = number_data_point(data);
-        assert_ne!(point.time_unix_nano, 0);
+        let err = metric_event_to_export_request(metric).unwrap_err();
+        assert!(err.to_string().contains("missing a timestamp"));
     }
 }

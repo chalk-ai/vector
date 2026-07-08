@@ -42,9 +42,7 @@ pub fn tag_value_to_any_value(tag: &TagValue) -> AnyValue {
         TagValue::Value(s) => AnyValue {
             value: Some(PBValue::StringValue(s.clone())),
         },
-        TagValue::Bare => AnyValue {
-            value: Some(PBValue::StringValue(String::new())),
-        },
+        TagValue::Bare => AnyValue { value: None },
     }
 }
 
