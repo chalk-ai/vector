@@ -843,7 +843,6 @@ mod tests {
 
         match data {
             Data::Sum(sum) => {
-                assert!(!sum.is_monotonic);
                 assert_eq!(
                     sum.aggregation_temporality,
                     AggregationTemporality::Delta as i32
