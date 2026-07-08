@@ -547,12 +547,12 @@ impl OTLPDataConverter {
                 buckets,
                 count,
                 sum,
-            } => Ok(self.aggregated_histogram(buckets, count, sum)),
+            } => self.aggregated_histogram(buckets, count, sum),
             MetricValue::AggregatedSummary {
                 quantiles,
                 count,
                 sum,
-            } => Ok(self.aggregated_summary(quantiles, count, sum)),
+            } => self.aggregated_summary(quantiles, count, sum),
             MetricValue::Set { .. } => {
                 Err("OTLP serializer does not support Set (statsd-style) metric values".into())
             }
@@ -566,6 +566,7 @@ impl OTLPDataConverter {
         }
     }
     fn counter(&self, value: &f64) -> Data {
+        let is_monotonic = matches!(self.kind, MetricKind::Absolute);
         Data::Sum(Sum {
             data_points: vec![NumberDataPoint {
                 attributes: self.attrs.clone(),
@@ -576,7 +577,7 @@ impl OTLPDataConverter {
                 flags: 0,
             }],
             aggregation_temporality: self.temporality,
-            is_monotonic: true,
+            is_monotonic,
         })
     }
 
@@ -608,7 +609,12 @@ impl OTLPDataConverter {
         }
     }
 
-    fn aggregated_histogram(&self, buckets: &[Bucket], count: &u64, sum: &f64) -> Data {
+    fn aggregated_histogram(
+        &self,
+        buckets: &[Bucket],
+        count: &u64,
+        sum: &f64,
+    ) -> Result<Data, vector_common::Error> {
         let attrs = self.attrs.clone();
         let mut buckets = buckets.to_owned();
         buckets.sort_by(|a, b| a.upper_limit.total_cmp(&b.upper_limit));
@@ -631,13 +637,23 @@ impl OTLPDataConverter {
             bounds
         };
 
-        Data::Histogram(Histogram {
+        let bucket_counts_sum: u64 = bucket_counts.iter().sum();
+        if bucket_counts_sum != *count {
+            return Err(format!(
+                "histogram bucket_counts sum ({bucket_counts_sum}) does not equal count ({count})"
+            )
+            .into());
+        }
+
+        let sum = if *sum >= 0.0 { Some(*sum) } else { None };
+
+        Ok(Data::Histogram(Histogram {
             data_points: vec![HistogramDataPoint {
                 attributes: attrs,
                 start_time_unix_nano: self.start_time_ns,
                 time_unix_nano: self.timestamp_ns,
                 count: *count,
-                sum: Some(*sum),
+                sum,
                 bucket_counts,
                 explicit_bounds,
                 exemplars: Vec::new(),
@@ -646,10 +662,38 @@ impl OTLPDataConverter {
                 max: None,
             }],
             aggregation_temporality: self.temporality,
-        })
+        }))
     }
 
-    fn aggregated_summary(&self, quantiles: &[Quantile], count: &u64, sum: &f64) -> Data {
+    fn aggregated_summary(
+        &self,
+        quantiles: &[Quantile],
+        count: &u64,
+        sum: &f64,
+    ) -> Result<Data, vector_common::Error> {
+        if matches!(self.kind, MetricKind::Incremental) {
+            return Err("OTLP serializer does not support Delta summary metric values".into());
+        }
+        if let Some(quantile) = quantiles
+            .iter()
+            .find(|q| !(0.0..=1.0).contains(&q.quantile))
+        {
+            return Err(format!(
+                "summary quantile {} is outside the valid range [0.0, 1.0]",
+                quantile.quantile
+            )
+            .into());
+        }
+        if let Some(quantile) = quantiles.iter().find(|q| q.value < 0.0) {
+            return Err(format!(
+                "summary quantile value {} must not be negative",
+                quantile.value
+            )
+            .into());
+        }
+        let mut quantiles = quantiles.to_owned();
+        quantiles.sort_by(|a, b| a.quantile.total_cmp(&b.quantile));
+
         let quantile_values = quantiles
             .iter()
             .map(|quantile| ValueAtQuantile {
@@ -658,7 +702,7 @@ impl OTLPDataConverter {
             })
             .collect();
 
-        Data::Summary(Summary {
+        Ok(Data::Summary(Summary {
             data_points: vec![SummaryDataPoint {
                 attributes: self.attrs.clone(),
                 start_time_unix_nano: 0,
@@ -668,7 +712,7 @@ impl OTLPDataConverter {
                 quantile_values,
                 flags: 0,
             }],
-        })
+        }))
     }
 }
 fn metric_value_to_data(
@@ -685,32 +729,32 @@ fn metric_value_to_data(
 pub fn metric_event_to_export_request(
     metric: MetricEvent,
 ) -> Result<ExportMetricsServiceRequest, vector_common::Error> {
-    let timestamp_nanos = metric
-        .timestamp()
-        .ok_or_else(|| -> vector_common::Error { "metric is missing a timestamp".into() })?
-        .timestamp_nanos_opt()
-        .ok_or_else(|| -> vector_common::Error {
-            "metric timestamp cannot be represented as nanoseconds".into()
-        })?;
-    let timestamp_ns = u64::try_from(timestamp_nanos).map_err(|_| -> vector_common::Error {
-        format!(
-            "metric timestamp {timestamp_nanos} is before the Unix epoch and cannot be encoded as an OTLP nanosecond timestamp"
-        )
-        .into()
-    })?;
+    let (timestamp_ns, start_time_ns): (u64, u64) = match metric.timestamp() {
+        Some(timestamp) => {
+            if let Some(timestamp_nanos) = timestamp.timestamp_nanos_opt() {
+                let timestamp_ns = u64::try_from(timestamp_nanos).map_err(|_| -> vector_common::Error {
+                    format!("metric timestamp {timestamp_nanos} is before the Unix epoch and cannot be encoded as an OTLP nanosecond timestamp").into()
+                })?;
+
+                let start_time_ns = match (metric.kind(), metric.interval_ms()) {
+                    (MetricKind::Incremental, Some(interval)) => {
+                        timestamp_ns.saturating_sub(u64::from(interval.get()) * 1_000_000)
+                    }
+                    _ => 0,
+                };
+                (timestamp_ns, start_time_ns)
+            } else {
+                (0, 0)
+            }
+        }
+        None => (0, 0),
+    };
 
     let empty_tags = MetricTags::default();
     let tags = metric.tags().unwrap_or(&empty_tags);
     let (resource, scope, attributes) = split_metric_tags(tags);
 
     let kind = metric.kind();
-
-    let start_time_ns = match (kind, metric.interval_ms()) {
-        (MetricKind::Incremental, Some(interval)) => {
-            timestamp_ns.saturating_sub(u64::from(interval.get()) * 1_000_000)
-        }
-        _ => 0,
-    };
 
     let name = match metric.namespace() {
         Some(namespace) => format!("{namespace}.{}", metric.name()),
@@ -770,7 +814,7 @@ mod tests {
 
         match data {
             Data::Sum(sum) => {
-                assert!(sum.is_monotonic);
+                assert!(!sum.is_monotonic);
                 assert_eq!(
                     sum.aggregation_temporality,
                     AggregationTemporality::Delta as i32
@@ -1039,18 +1083,5 @@ mod tests {
             }
             other => panic!("expected Data::Summary, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn missing_timestamp_is_rejected() {
-        let metric = MetricEvent::new(
-            "cpu",
-            MetricKind::Absolute,
-            MetricValue::Gauge { value: 1.0 },
-        );
-        assert!(metric.timestamp().is_none());
-
-        let err = metric_event_to_export_request(metric).unwrap_err();
-        assert!(err.to_string().contains("missing a timestamp"));
     }
 }
