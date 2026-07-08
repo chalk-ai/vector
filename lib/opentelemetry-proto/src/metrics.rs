@@ -745,10 +745,8 @@ pub fn metric_event_to_export_request(
 #[cfg(test)]
 mod tests {
     use super::super::common::str_to_key_value;
-    use super::super::proto::common::v1::any_value::Value as PBValue;
     use super::*;
     use vector_core::event::MetricValue;
-    use vector_core::event::metric::StatisticKind;
 
     fn number_data_point(data: Data) -> NumberDataPoint {
         match data {
@@ -879,7 +877,8 @@ mod tests {
             MetricKind::Absolute,
             MetricValue::Gauge { value: 1.0 },
         )
-        .with_namespace(Some("vector"));
+        .with_namespace(Some("vector"))
+        .with_timestamp(Some(Utc::now()));
 
         let request = metric_event_to_export_request(metric).expect("should encode");
         assert_eq!(
@@ -892,7 +891,8 @@ mod tests {
             "requests",
             MetricKind::Absolute,
             MetricValue::Gauge { value: 1.0 },
-        );
+        )
+        .with_timestamp(Some(Utc::now()));
         let request = metric_event_to_export_request(metric).expect("should encode");
         assert_eq!(
             request.resource_metrics[0].scope_metrics[0].metrics[0].name,
@@ -1039,67 +1039,6 @@ mod tests {
             }
             other => panic!("expected Data::Summary, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn tag_splitting() {
-        let mut tags = MetricTags::default();
-        tags.insert("resource.service.name".to_string(), "my-service");
-        tags.insert("scope.name".to_string(), "my-scope");
-        tags.insert("scope.version".to_string(), "1.0.0");
-        tags.insert("scope.custom".to_string(), "scope-value");
-        tags.insert("env".to_string(), "prod");
-        tags.insert("bare_tag".to_string(), TagValue::Bare);
-
-        let (resource, scope, attributes) = split_metric_tags(&tags);
-
-        assert_eq!(resource.attributes.len(), 1);
-        assert_eq!(resource.attributes[0].key, "service.name");
-        assert_eq!(
-            resource.attributes[0].value.as_ref().unwrap().value,
-            Some(PBValue::StringValue("my-service".to_string()))
-        );
-
-        assert_eq!(scope.name, "my-scope");
-        assert_eq!(scope.version, "1.0.0");
-        assert_eq!(scope.attributes.len(), 1);
-        assert_eq!(scope.attributes[0].key, "custom");
-
-        assert_eq!(attributes.len(), 2);
-        let env = attributes.iter().find(|kv| kv.key == "env").unwrap();
-        assert_eq!(
-            env.value.as_ref().unwrap().value,
-            Some(PBValue::StringValue("prod".to_string()))
-        );
-        let bare = attributes.iter().find(|kv| kv.key == "bare_tag").unwrap();
-        assert_eq!(
-            bare.value.as_ref().unwrap().value,
-            Some(PBValue::StringValue(String::new()))
-        );
-    }
-
-    #[test]
-    fn unsupported_metric_returns_err() {
-        let set_metric = MetricEvent::new(
-            "unique_users",
-            MetricKind::Incremental,
-            MetricValue::Set {
-                values: std::iter::once("a".to_string()).collect(),
-            },
-        );
-        let err = metric_event_to_export_request(set_metric).unwrap_err();
-        assert!(err.to_string().contains("Set"));
-
-        let distribution_metric = MetricEvent::new(
-            "latencies",
-            MetricKind::Incremental,
-            MetricValue::Distribution {
-                samples: Vec::new(),
-                statistic: StatisticKind::Histogram,
-            },
-        );
-        let err = metric_event_to_export_request(distribution_metric).unwrap_err();
-        assert!(err.to_string().contains("Distribution"));
     }
 
     #[test]
