@@ -120,9 +120,9 @@ automates this.
 
 Create the namespace and the consumer that drains everything Vector forwards to it:
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/namespace.yaml" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/namespace.yaml" dir="true" >}}
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/consumer.yaml" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/consumer.yaml" dir="true" >}}
 
 ```bash
 kubectl apply -f manifests/namespace.yaml
@@ -145,7 +145,7 @@ Vector is installed with the shared base Helm values, which configure the
 `http_server` source, the `parse_regex!` transform, and the `socket` sink to
 the consumer:
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/scenarios/base/values.yaml" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/scenarios/base/values.yaml" dir="true" >}}
 
 ```bash
 helm upgrade --install vector vectordotdev/vector --namespace vector-perf -f scenarios/base/values.yaml --set replicas=1
@@ -157,12 +157,12 @@ kubectl apply -f manifests/producer.yaml
 The ingress routes HTTP POSTs to the Vector service at the request level (L7),
 which is what lets the HPA find equilibrium in Phase 4:
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/ingress.yaml" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/ingress.yaml" dir="true" >}}
 
 The producer is [lading](https://github.com/DataDog/lading), configured to
 generate `apache_common` log lines at 55 MiB/s across 100 parallel connections:
 
-{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/producer.yaml" >}}
+{{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/producer.yaml" dir="true" >}}
 
 55 MiB/s is expected to overwhelm a single pod's regex-parsing capacity, so
 Vector should back-pressure lading down to whatever it can actually process.

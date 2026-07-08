@@ -8,7 +8,11 @@
 {{ end }}
 
 {{ $lang := .Get "lang" | default (path.Ext $path | strings.TrimPrefix ".") }}
-{{ $label := .Get "label" | default (path.Base $path) }}
+{{ $showDir := eq (.Get "dir") "true" }}
+{{ $marker := printf "%s/" .Page.File.BaseFileName }}
+{{ $parts := split $path $marker }}
+{{ $relPath := index $parts (sub (len $parts) 1) }}
+{{ $label := .Get "label" | default (cond $showDir $relPath (path.Base $path)) }}
 {{ $content := readFile $path }}
 {{ $githubUrl := printf "https://github.com/vectordotdev/vector/blob/master/website/%s" $path }}
 {{ $open := true }}
