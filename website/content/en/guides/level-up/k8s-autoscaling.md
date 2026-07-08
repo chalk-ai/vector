@@ -131,6 +131,7 @@ kubectl apply -f manifests/consumer.yaml
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   -n ingress-nginx --create-namespace \
+  --version 4.15.1 \
   --set controller.service.type=ClusterIP \
   --set controller.replicaCount=1 \
   --wait --timeout=3m
