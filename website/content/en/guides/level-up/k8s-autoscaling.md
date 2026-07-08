@@ -10,8 +10,8 @@ tags: ["level up", "guides", "guide", "kubernetes", "load balancing", "nginx"]
 ---
 
 This guide walks through observing a single Vector pod hit its CPU ceiling while
-parsing Apache Common Log format, then eliminating that ceiling by manually
-scaling horizontally behind Nginx. Then we're going to set up automatically
+parsing [Apache Common Log format](https://httpd.apache.org/docs/current/logs.html#common), then eliminating that ceiling by manually
+scaling horizontally behind [Nginx](https://www.nginx.com/). Then we're going to set up automatically
 scaling using Kubernetes [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
 (HPA) find its own equilibrium.
 
@@ -31,7 +31,7 @@ generator's connections.
 
 ## Test environment
 
-The benchmark was measured on a **K3s single-node cluster on an EC2 c5.4xlarge**
+The benchmark was measured on a **[K3s](https://k3s.io/) single-node cluster on an [EC2](https://aws.amazon.com/ec2/) c5.4xlarge**
 (16 vCPU, 32 GiB RAM). A single-node cluster was chosen so that latency and
 network overhead are not a factor and collected metrics are precise.
 
@@ -74,7 +74,7 @@ defines a request boundary, so an L7 load balancer like Nginx can dispatch
 each request independently, letting new pods pick up load as soon as they're
 Ready.
 
-A similar setup using HAProxy in TCP mode has the same problem: it
+A similar setup using [HAProxy](https://www.haproxy.org/) in TCP mode has the same problem: it
 load-balances at the connection level, so a single producer's connection stays
 pinned to one consumer for its lifetime, and can leave some consumers starved
 of data entirely.
@@ -84,15 +84,15 @@ through a plain ClusterIP Service.
 
 ## Prerequisites
 
-- `kubectl` configured against a target cluster
-- `helm` ≥ 3.0
+- [`kubectl`](https://kubernetes.io/docs/reference/kubectl/) configured against a target cluster
+- [`helm`](https://helm.sh/) ≥ 3.0
 - Cluster nodes with at least 1 allocatable CPU per Vector pod
-- `grpcurl` for metric collection
+- [`grpcurl`](https://github.com/fullstorydev/grpcurl) for metric collection
 - [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed — required for `kubectl top pods` and HPA CPU targets. K3s bundles it by default; on other clusters run `kubectl top nodes` to verify it is available before starting.
 
 ## How the metrics are collected
 
-Each Vector pod exposes `ObservabilityService` on port 8686 (gRPC). The
+Each Vector pod exposes [`ObservabilityService`](https://github.com/vectordotdev/vector/blob/master/proto/vector/observability.proto) on port 8686 ([gRPC](https://grpc.io/)). The
 measurement approach used for every phase below is: port-forward to a pod,
 take two `GetComponents` samples 30 s apart, and diff `receivedBytesTotal` on
 the `in` source component to get a per-pod throughput rate. Per-pod CPU is
