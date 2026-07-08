@@ -18,7 +18,13 @@ use super::*;
 
 // Metrics may take a moment to flow through to fakeintake, so pipeline
 // fetches are retried until data shows up (or we give up).
-const MAX_RETRIES: usize = 10;
+//
+// The dogstatsd emitter deliberately waits 10s after startup before sending
+// any metrics (tests/e2e/datadog-metrics/dogstatsd_client/client.py), and the
+// Agent's default aggregator flush interval (~15s) adds further delay on top
+// of that before metrics reach fakeintake. 45s covers that ~25s worst case
+// with margin for network/processing overhead.
+const MAX_RETRIES: usize = 45;
 const WAIT_INTERVAL: Duration = Duration::from_secs(1);
 
 async fn decompress_payload(payload: &[u8]) -> std::io::Result<Vec<u8>> {
