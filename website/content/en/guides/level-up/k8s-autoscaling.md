@@ -2,7 +2,7 @@
 date: "2026-07-01"
 title: Load balancing and scaling Vector on Kubernetes
 short: K8s autoscaling
-description: Observe a single Vector pod hit its CPU ceiling and eliminate it by scaling horizontally behind an L7 load balancer, with the HPA finding its own equilibrium.
+description: Observe a single Vector pod hit its CPU ceiling, eliminate it by manually scaling horizontally behind an L7 load balancer, then automate that scaling with the Kubernetes HPA finding its own equilibrium.
 authors: ["thomasqueirozb"]
 domain: platforms
 weight: 7
@@ -11,9 +11,9 @@ tags: ["level up", "guides", "guide", "kubernetes", "load balancing", "nginx"]
 
 This guide walks through observing a single Vector pod hit its CPU ceiling while
 parsing [Apache Common Log format](https://httpd.apache.org/docs/current/logs.html#common), then eliminating that ceiling by manually
-scaling horizontally behind [Nginx](https://www.nginx.com/). Then we're going to set up automatically
+scaling horizontally behind [Nginx](https://www.nginx.com/). Then we're going to set up automatic
 scaling using Kubernetes [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
-(HPA) find its own equilibrium.
+(HPA) and let it find its own equilibrium.
 
 All steps are reproducible using the manifests and Helm values in this repository.
 
@@ -79,8 +79,8 @@ load-balances at the connection level, so a single producer's connection stays
 pinned to one consumer for its lifetime, and can leave some consumers starved
 of data entirely.
 
-This is we install an Nginx ingress in front of Vector instead of exposing it
-through a plain ClusterIP Service.
+This is why we install an Nginx ingress in front of Vector instead of exposing
+it through a plain ClusterIP Service.
 
 ## Prerequisites
 
@@ -248,7 +248,7 @@ pods limited to **1 vCPU / 2 GiB**.
 
 <!-- RESULTS-COMPARE-END -->
 
-We can see that 8 pods is too much, but 3 is too little. At 8 pods we're not
+We can see that 8 pods is too many, but 3 is too few. At 8 pods we're not
 properly utilizing each pod's capacity, at only 47% average CPU utilization.
 
 ## Phase 4 — HPA finds equilibrium
