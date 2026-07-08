@@ -74,6 +74,18 @@ fn generate_sketch_intake(mut payloads: Vec<SketchPayload>) -> SketchIntake {
     intake
 }
 
+fn has_distribution(sketches: &SketchIntake) -> bool {
+    sketches
+        .keys()
+        .any(|ctx| ctx.metric_name.starts_with("foo_metric.distribution"))
+}
+
+// whether the sketch intake looks complete, i.e. the expected distribution
+// metric has arrived. Used to decide whether it's worth continuing to poll fakeintake.
+fn sketch_intake_is_complete(sketches: &SketchIntake) -> bool {
+    !sketches.is_empty() && has_distribution(sketches)
+}
+
 // runs assertions that each set of payloads should be true to regardless
 // of the pipeline
 fn common_sketch_assertions(sketches: &SketchIntake) {
@@ -81,14 +93,10 @@ fn common_sketch_assertions(sketches: &SketchIntake) {
     assert!(!sketches.is_empty());
     info!("metric sketch received: {}", sketches.len());
 
-    let mut found = false;
-    sketches.keys().for_each(|ctx| {
-        if ctx.metric_name.starts_with("foo_metric.distribution") {
-            found = true;
-        }
-    });
-
-    assert!(found, "Didn't receive metric type distribution");
+    assert!(
+        has_distribution(sketches),
+        "Didn't receive metric type distribution"
+    );
 }
 
 async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
@@ -109,11 +117,11 @@ async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
         info!("generating sketch intake");
         sketches = generate_sketch_intake(payloads);
 
-        if !sketches.is_empty() {
+        if sketch_intake_is_complete(&sketches) {
             break;
         }
 
-        info!("No valid sketch payloads yet, retrying...");
+        info!("Sketch payloads incomplete, retrying...");
         tokio::time::sleep(WAIT_INTERVAL).await;
     }
 

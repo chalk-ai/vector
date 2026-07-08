@@ -1,10 +1,17 @@
 pub mod logs;
 pub mod metrics;
 
+use std::time::Duration;
+
 use reqwest::{Client, Method};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
-use tracing::trace;
+use tracing::{trace, warn};
+
+// Fakeintake may not be ready to accept connections yet, particularly right
+// after the compose services start, so transient request failures are retried.
+const MAX_FETCH_ATTEMPTS: usize = 10;
+const FETCH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 fn fake_intake_vector_address() -> String {
     std::env::var("FAKE_INTAKE_VECTOR_ENDPOINT")
@@ -60,19 +67,29 @@ where
     R: FakeIntakeResponseT + DeserializeOwned,
 {
     let url = &R::build_url(base, endpoint);
-    let response = Client::new()
-        .request(Method::GET, url)
-        .send()
-        .await
-        .unwrap_or_else(|_| panic!("Sending GET request to {url} failed"));
 
-    trace!(
-        "Fakeintake response headers for {endpoint}: {:?}",
-        response.headers()
-    );
+    let mut last_error = String::new();
+    for attempt in 1..=MAX_FETCH_ATTEMPTS {
+        match Client::new().request(Method::GET, url).send().await {
+            Ok(response) => {
+                trace!(
+                    "Fakeintake response headers for {endpoint}: {:?}",
+                    response.headers()
+                );
 
-    response
-        .json::<R>()
-        .await
-        .expect("Parsing fakeintake payloads failed")
+                match response.json::<R>().await {
+                    Ok(parsed) => return parsed,
+                    Err(e) => last_error = format!("Parsing fakeintake payloads failed: {e}"),
+                }
+            }
+            Err(e) => last_error = format!("Sending GET request to {url} failed: {e}"),
+        }
+
+        if attempt < MAX_FETCH_ATTEMPTS {
+            warn!("{last_error}, retrying...");
+            tokio::time::sleep(FETCH_RETRY_INTERVAL).await;
+        }
+    }
+
+    panic!("{last_error} after {MAX_FETCH_ATTEMPTS} attempts");
 }

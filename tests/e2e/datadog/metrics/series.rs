@@ -83,17 +83,11 @@ fn generate_series_intake(payloads: &[MetricPayload]) -> SeriesIntake {
     intake
 }
 
-// runs assertions that each set of payloads should be true to regardless
-// of the pipeline
-fn common_series_assertions(series: &SeriesIntake) {
-    // we should have received some metrics from the emitter
-    assert!(!series.is_empty());
-    info!("metric series received: {}", series.len());
-
-    // specifically we should have received each of these
+// checks which of the expected metric types are present in the given series
+// NOTE: no count expected due to the in-app type being Rate
+// (https://docs.datadoghq.com/metrics/types/?tab=count#submission-types-and-datadog-in-app-types)
+fn found_metric_types(series: &SeriesIntake) -> [(bool, &'static str); 4] {
     let mut found = [
-        // NOTE: no count expected due to the in-app type being Rate
-        // (https://docs.datadoghq.com/metrics/types/?tab=count#submission-types-and-datadog-in-app-types)
         (false, "rate"),
         (false, "gauge"),
         (false, "set"),
@@ -105,13 +99,29 @@ fn common_series_assertions(series: &SeriesIntake) {
                 .metric_name
                 .starts_with(&format!("foo_metric.{}", found.1))
             {
-                info!("received {}", found.1);
                 found.0 = true;
             }
         });
     });
 
     found
+}
+
+// whether the series intake looks complete, i.e. every expected metric type
+// has arrived. Used to decide whether it's worth continuing to poll fakeintake.
+fn series_intake_is_complete(series: &SeriesIntake) -> bool {
+    !series.is_empty() && found_metric_types(series).iter().all(|(found, _)| *found)
+}
+
+// runs assertions that each set of payloads should be true to regardless
+// of the pipeline
+fn common_series_assertions(series: &SeriesIntake) {
+    // we should have received some metrics from the emitter
+    assert!(!series.is_empty());
+    info!("metric series received: {}", series.len());
+
+    // specifically we should have received each of these
+    found_metric_types(series)
         .iter()
         .for_each(|(found, mtype)| assert!(found, "Didn't receive metric type {}", *mtype));
 }
@@ -196,11 +206,11 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
         info!("generating series intake");
         intake = generate_series_intake(&payloads);
 
-        if !intake.is_empty() {
+        if series_intake_is_complete(&intake) {
             break;
         }
 
-        info!("No valid series payloads yet, retrying...");
+        info!("Series payloads incomplete, retrying...");
         tokio::time::sleep(WAIT_INTERVAL).await;
     }
 
@@ -229,11 +239,11 @@ async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
         info!("generating series intake");
         intake = generate_series_intake(&payloads);
 
-        if !intake.is_empty() {
+        if series_intake_is_complete(&intake) {
             break;
         }
 
-        info!("No valid series payloads yet, retrying...");
+        info!("Series payloads incomplete, retrying...");
         tokio::time::sleep(WAIT_INTERVAL).await;
     }
 
