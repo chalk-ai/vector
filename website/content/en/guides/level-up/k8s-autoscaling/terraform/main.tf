@@ -109,7 +109,7 @@ resource "aws_instance" "k3s" {
 
   user_data                   = <<-USERDATA
     #!/bin/bash
-    set -e
+    set -eo pipefail
 
     # Install K3s — include the public IP in the TLS SAN so kubectl works directly
     # Poll IMDS until the public IP is available (avoids a race on first boot).
