@@ -86,7 +86,7 @@ through a plain ClusterIP Service.
 
 - [`kubectl`](https://kubernetes.io/docs/reference/kubectl/) configured against a target cluster
 - [`helm`](https://helm.sh/) ≥ 3.0
-- Cluster nodes with at least 1 allocatable CPU per Vector pod
+- At least 9 allocatable CPUs total (8 for Vector at max scale, 0.5 for the consumer, 0.2 for the producer)
 - [`grpcurl`](https://github.com/fullstorydev/grpcurl) for metric collection
 - [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed — required for `kubectl top pods` and HPA CPU targets. K3s bundles it by default; on other clusters run `kubectl top nodes` to verify it is available before starting.
 
