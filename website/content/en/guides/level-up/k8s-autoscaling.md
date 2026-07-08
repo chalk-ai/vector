@@ -258,7 +258,7 @@ saturation crossover is 55 / 16.64 ≈ **3.3 pods** at 100% CPU. At a 70%
 utilization target, the expected equilibrium is ⌈3.3 / 0.70⌉ = ⌈4.71⌉ = **5 pods**.
 
 We can now configure the HPA to find the minimum pod count that keeps CPU
-utilization below the 70% target.
+utilization around the 70% target.
 
 ```bash
 # Reset to 1 pod
