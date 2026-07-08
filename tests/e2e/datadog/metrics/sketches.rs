@@ -93,16 +93,29 @@ fn common_sketch_assertions(sketches: &SketchIntake) {
 
 async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
     info!("getting sketch payloads");
-    let payloads =
-        get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT).await;
 
-    info!("unpacking payloads");
-    let payloads = unpack_proto_payloads(&payloads)
-        .await
-        .expect("Failed to unpack sketch payloads");
+    // Retry until we have sketch data or hit max retries. This is to ensure
+    // events flow through to fakeintake before asking for them.
+    let mut sketches = SketchIntake::new();
+    for _ in 0..MAX_RETRIES {
+        let payloads =
+            get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT).await;
 
-    info!("generating sketch intake");
-    let sketches = generate_sketch_intake(payloads);
+        info!("unpacking payloads");
+        let payloads = unpack_proto_payloads(&payloads)
+            .await
+            .expect("Failed to unpack sketch payloads");
+
+        info!("generating sketch intake");
+        sketches = generate_sketch_intake(payloads);
+
+        if !sketches.is_empty() {
+            break;
+        }
+
+        info!("No valid sketch payloads yet, retrying...");
+        tokio::time::sleep(WAIT_INTERVAL).await;
+    }
 
     common_sketch_assertions(&sketches);
 

@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::time::Duration;
 
 use async_compression::tokio::bufread::{ZstdDecoder, ZstdEncoder};
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -14,6 +15,11 @@ mod series;
 mod sketches;
 
 use super::*;
+
+// Metrics may take a moment to flow through to fakeintake, so pipeline
+// fetches are retried until data shows up (or we give up).
+const MAX_RETRIES: usize = 10;
+const WAIT_INTERVAL: Duration = Duration::from_secs(1);
 
 async fn decompress_payload(payload: &[u8]) -> std::io::Result<Vec<u8>> {
     if is_zstd(payload) {
@@ -119,10 +125,6 @@ where
 #[tokio::test]
 async fn validate() {
     trace_init();
-
-    // Even with configuring docker service dependencies, we need a small buffer of time
-    // to ensure events flow through to fakeintake before asking for them
-    std::thread::sleep(std::time::Duration::from_secs(2));
 
     series::validate().await;
 

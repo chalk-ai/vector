@@ -180,16 +180,29 @@ fn unpack_v1_series(in_payloads: &[FakeIntakePayloadJson]) -> Vec<DatadogSeriesM
 
 async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
     info!("getting v1 series payloads");
-    let payloads =
-        get_fakeintake_payloads::<FakeIntakeResponseJson>(&address, SERIES_ENDPOINT_V1).await;
 
-    info!("unpacking payloads");
-    let payloads = unpack_v1_series(&payloads.payloads);
-    info!("converting payloads");
-    let payloads = convert_v1_payloads_v2(&payloads);
+    // Retry until we have series data or hit max retries. This is to ensure
+    // events flow through to fakeintake before asking for them.
+    let mut intake = SeriesIntake::new();
+    for _ in 0..MAX_RETRIES {
+        let payloads =
+            get_fakeintake_payloads::<FakeIntakeResponseJson>(&address, SERIES_ENDPOINT_V1).await;
 
-    info!("generating series intake");
-    let intake = generate_series_intake(&payloads);
+        info!("unpacking payloads");
+        let payloads = unpack_v1_series(&payloads.payloads);
+        info!("converting payloads");
+        let payloads = convert_v1_payloads_v2(&payloads);
+
+        info!("generating series intake");
+        intake = generate_series_intake(&payloads);
+
+        if !intake.is_empty() {
+            break;
+        }
+
+        info!("No valid series payloads yet, retrying...");
+        tokio::time::sleep(WAIT_INTERVAL).await;
+    }
 
     common_series_assertions(&intake);
 
@@ -200,16 +213,29 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
 
 async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
     info!("getting v2 series payloads");
-    let payloads =
-        get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SERIES_ENDPOINT_V2).await;
 
-    info!("unpacking payloads");
-    let payloads = unpack_proto_payloads::<MetricPayload>(&payloads)
-        .await
-        .expect("Failed to unpack v2 series payloads");
+    // Retry until we have series data or hit max retries. This is to ensure
+    // events flow through to fakeintake before asking for them.
+    let mut intake = SeriesIntake::new();
+    for _ in 0..MAX_RETRIES {
+        let payloads =
+            get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SERIES_ENDPOINT_V2).await;
 
-    info!("generating series intake");
-    let intake = generate_series_intake(&payloads);
+        info!("unpacking payloads");
+        let payloads = unpack_proto_payloads::<MetricPayload>(&payloads)
+            .await
+            .expect("Failed to unpack v2 series payloads");
+
+        info!("generating series intake");
+        intake = generate_series_intake(&payloads);
+
+        if !intake.is_empty() {
+            break;
+        }
+
+        info!("No valid series payloads yet, retrying...");
+        tokio::time::sleep(WAIT_INTERVAL).await;
+    }
 
     common_series_assertions(&intake);
 
