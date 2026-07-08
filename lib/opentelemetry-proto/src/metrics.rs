@@ -516,6 +516,23 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
     (resource, scope, attributes)
 }
 
+fn reject_duplicate_values(
+    values: impl Iterator<Item = f64>,
+    description: &str,
+) -> Result<(), vector_common::Error> {
+    let mut previous: Option<f64> = None;
+    for value in values {
+        if previous == Some(value) {
+            return Err(format!(
+                "{description} must be strictly increasing, but found duplicate value {value}"
+            )
+            .into());
+        }
+        previous = Some(value);
+    }
+    Ok(())
+}
+
 struct OTLPDataConverter {
     kind: MetricKind,
     timestamp_ns: u64,
@@ -566,7 +583,7 @@ impl OTLPDataConverter {
         }
     }
     fn counter(&self, value: &f64) -> Data {
-        let is_monotonic = matches!(self.kind, MetricKind::Absolute);
+        let is_monotonic = matches!(self.kind, MetricKind::Absolute) || *value >= 0.0;
         Data::Sum(Sum {
             data_points: vec![NumberDataPoint {
                 attributes: self.attrs.clone(),
@@ -618,6 +635,10 @@ impl OTLPDataConverter {
         let attrs = self.attrs.clone();
         let mut buckets = buckets.to_owned();
         buckets.sort_by(|a, b| a.upper_limit.total_cmp(&b.upper_limit));
+        reject_duplicate_values(
+            buckets.iter().map(|bucket| bucket.upper_limit),
+            "histogram bucket upper_limit",
+        )?;
 
         let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
         let has_inf_bucket = buckets
@@ -643,6 +664,10 @@ impl OTLPDataConverter {
                 "histogram bucket_counts sum ({bucket_counts_sum}) does not equal count ({count})"
             )
             .into());
+        }
+
+        if *count == 0 && *sum != 0.0 {
+            return Err(format!("histogram sum ({sum}) must be zero when count is zero").into());
         }
 
         let sum = if *sum >= 0.0 { Some(*sum) } else { None };
@@ -693,6 +718,10 @@ impl OTLPDataConverter {
         }
         let mut quantiles = quantiles.to_owned();
         quantiles.sort_by(|a, b| a.quantile.total_cmp(&b.quantile));
+        reject_duplicate_values(
+            quantiles.iter().map(|quantile| quantile.quantile),
+            "summary quantile",
+        )?;
 
         let quantile_values = quantiles
             .iter()
