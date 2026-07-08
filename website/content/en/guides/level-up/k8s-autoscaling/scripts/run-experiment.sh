@@ -167,13 +167,13 @@ workdir = sys.argv[2]
 def get_bytes_events(path):
     try:
         d = json.load(open(path))
-    except Exception:
-        return 0, 0
+    except Exception as e:
+        sys.exit(f"ERROR: failed to parse {path}: {e}")
     for c in d.get('components', []):
         if c.get('componentId') == 'in':
             m = c.get('metrics', {})
             return int(m.get('receivedBytesTotal', 0)), int(m.get('receivedEventsTotal', 0))
-    return 0, 0
+    sys.exit(f"ERROR: no 'in' component found in {path}")
 
 total_bytes = 0
 total_events = 0
