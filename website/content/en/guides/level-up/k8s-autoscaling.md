@@ -182,7 +182,7 @@ The pod is pinned at its 1000m CPU limit, and throughput tops out at
 16.64 MiB/s, confirming the expected CPU ceiling. This per-pod throughput is the
 baseline that the next two phases are measured against.
 
-## Phase 2 — Three pods
+## Phase 2: 3 pods
 
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=3
@@ -200,19 +200,19 @@ hasn't been reached yet.
 | Throughput | **50.47 MiB/s** |
 | Events/s | **396,846 ev/s** |
 | Pod CPU | **~1000m (100%)** |
-| Scaling vs Phase 1 | **3.03×** |
+| Scaling vs. Phase 1 | **3.03×** |
 | Bottleneck | **Vector CPU** |
 
 <!-- RESULTS-LB-END -->
 
-## Phase 3 — Eight pods
-
+## Phase 3: 8 pods
+The following commands scale the deployment to eight replicas:
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=8
 kubectl rollout status deployment/vector -n vector-perf
 ```
 
-8 × 16.64 MiB/s = 133.1 MiB/s combined capacity >> 55 MiB/s.  Vector is no longer
+Eight pods provide a combined throughput ceiling of approximately 133.1 MiB/s (8 × 16.64 MiB/s = 133.1 MiB/s), well above the workload's 55 MiB/s. The bottleneck is
 the bottleneck; all 55 MiB/s flows through and pods have ample headroom.
 
 <!-- RESULTS-8W-START -->
@@ -224,18 +224,18 @@ the bottleneck; all 55 MiB/s flows through and pods have ample headroom.
 | Pod CPU | **~470m (47%)** |
 | Bottleneck | **None, spare capacity** |
 
-The bottleneck has been eliminated.  Each pod handles ~7.1 MiB/s at ~47% CPU,
-leaving over half of each pod's capacity unused.  With L7 per-request routing,
-load is distributed evenly across all 8 pods.
+Each pod handles approximately 7.1 MiB/s at about 47% CPU utilization,
+leaving over half of each pod's capacity unused. With L7 per-request routing,
+load is distributed evenly across all eight pods.
 
 <!-- RESULTS-8W-END -->
 
-## Comparison
+## Comparison: Phases 1–3
 
 <!-- RESULTS-COMPARE-START -->
 
-All phases: **55 MiB/s lading** (100 parallel connections, Nginx L7 ingress),
-pods limited to **1 vCPU / 2 GiB**.
+All phases use a **55 MiB/s lading workload** (100 parallel connections through the L7 NGINX Ingress Controller),
+with Vector pods limited to **1 vCPU and 2 GiB of memory**.
 
 | | Phase 1 (1 pod) | Phase 2 (3 pods) | Phase 3 (8 pods) |
 | - | ----------------- | ------------------ | ------------------ |
@@ -243,14 +243,14 @@ pods limited to **1 vCPU / 2 GiB**.
 | Events/s | 130,863 | 396,846 | 446,650 |
 | CPU per pod | 1000m (100%) | ~1000m (100%) | ~470m (47%) |
 | Bottleneck | Vector CPU | Vector CPU | **None** |
-| Scaling vs Phase 1 | 1× | 3.03× | **3.41×** |
+| Scaling vs. Phase 1 | 1× | 3.03× | **3.41×** |
 
 <!-- RESULTS-COMPARE-END -->
 
-We can see that 8 pods is too many, but 3 is too few. At 8 pods we're not
-properly utilizing each pod's capacity, at only 47% average CPU utilization.
+We can see that eight pods is too many, but three pods is too few. At eight pods, we're not
+properly utilizing each pod's capacity (only 47% average CPU utilization).
 
-## Phase 4 — HPA finds equilibrium
+## Phase 4: HPA finds equilibrium
 
 Based on the results of Phase 1, we can estimate how many pods we would need
 to spin up to stay under CPU saturation while keeping some headroom. The
@@ -269,8 +269,7 @@ kubectl autoscale deployment vector -n vector-perf \
   --cpu-percent=70 --min=1 --max=8
 ```
 
-### Phase 4 results
-
+The following timeline shows how the HPA scales the deployment from one replica to five replicas
 <!-- RESULTS-HPA-START -->
 
 **Scale-up timeline (no manual intervention):**
@@ -283,13 +282,13 @@ kubectl autoscale deployment vector -n vector-perf \
 | t=136 s | **5** | 100% | HPA scales 3→5 |
 | t=196 s | **5** | **71%** | **Stable, equilibrium** |
 
-Time to equilibrium: **196 s (~3 min)**, 3 scale events, 0 manual cycling.
+Time to equilibrium: **196 seconds (approximately 3 minutes)**, 3 scale events, no manual scaling.
 
-**Throughput at equilibrium: 56.56 MiB/s, 444,744 ev/s, 5 pods, 71% avg CPU.**
+**Throughput at equilibrium: 56.56 MiB/s, 444,744 ev/s, 5 pods, 71% average CPU.**
 
-The HPA settled at 5 pods: CPU converged from 97% immediately after the 3→5
-scale event down to 71%, within the ±10% tolerance band (63–77%), and held
-stable for three consecutive 15 s intervals.
+The HPA settles at five pods: CPU converges from 97% immediately after the 3→5
+scale-up event to 71%, within the ±10% tolerance band (63–77%), and holds
+stable for three consecutive 15-second intervals.
 
 <!-- RESULTS-HPA-END -->
 
@@ -301,13 +300,13 @@ stable for three consecutive 15 s intervals.
 | Events/s | 130,863 | 396,846 | 446,650 | **444,744** |
 | CPU per pod | 1000m (100%) | ~1000m (100%) | ~470m (47%) | **~710m (71%)** |
 | Bottleneck | Vector CPU | Vector CPU | None | None |
-| Scaling vs Phase 1 | 1× | 3.03× | 3.41× | **3.40×** |
+| Scaling vs. Phase 1 | 1× | 3.03× | 3.41× | **3.40×** |
 | Pod count | manual (1) | manual (3) | manual (8) | **auto (5)** |
 
-Phase 4 reaches Phase 3's throughput with 3 fewer pods and no manual scaling:
-the HPA found exactly 5 pods, matching the theoretical prediction of
-⌈(55 / 16.64) / 0.70⌉ = 5, and kept CPU near its 70% target instead of
-leaving ~53% headroom idle on every pod.
+Phase 4 reaches Phase 3's throughput with three fewer pods and no manual scaling.
+The HPA scales to five pods, matching the prediction
+and keeping CPU near its 70% target instead of
+leaving each pod with roughly 53% of unused CPU capacity.
 
 ## Key takeaways
 
@@ -324,23 +323,23 @@ leaving ~53% headroom idle on every pod.
    The saturation crossover is at ~3.3 pods; at the 70% HPA target that
    predicts ⌈3.3 / 0.70⌉ = 5 pods, exactly what Phase 4 observed.
 
-4. **HPA finds the right pod count automatically.**  With HTTP + L7 routing,
-   every new pod starts receiving traffic immediately after becoming Ready.
-   HPA converged at 5 pods in 196 s with zero manual intervention.
+4. **The HPA determines the right pod count automatically.**  With HTTP and L7 routing,
+   each new pod starts receiving traffic immediately after becoming Ready.
+   
 
 ---
 
 ## Replicating these results
 
 The [`terraform/`](https://github.com/vectordotdev/vector/tree/master/website/content/en/guides/level-up/k8s-autoscaling/terraform)
-directory provisions the K3s single-node cluster (EC2 `c5.4xlarge`) the
-benchmark above was measured on, if you don't already have a cluster to test
+directory provisions the K3s single-node cluster (EC2 `c5.4xlarge`) that
+we used, if you don't already have a cluster to test
 against.
 
 Once the [Setup](#setup) steps are complete and Phase 1's producer and ingress
 are deployed, `run-experiment.sh` runs all four phases end to end: scaling the
 deployment, waiting for each rollout, measuring throughput, and creating the
-HPA for Phase 4, then prints a single results table.
+HPA for Phase 4. It then prints a single results table.
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/scripts/run-experiment.sh" open="false" >}}
 
