@@ -197,8 +197,9 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
     info!("getting v1 series payloads");
 
     // Retry until we have series data or hit max retries. This is to ensure
-    // events flow through to fakeintake before asking for them.
-    let intake = poll_until(
+    // events flow through to fakeintake before asking for them, and that the
+    // data has stabilized (see `poll_until_stable`).
+    let intake = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
         || async {
@@ -231,8 +232,9 @@ async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
     info!("getting v2 series payloads");
 
     // Retry until we have series data or hit max retries. This is to ensure
-    // events flow through to fakeintake before asking for them.
-    let intake = poll_until(
+    // events flow through to fakeintake before asking for them, and that the
+    // data has stabilized (see `poll_until_stable`).
+    let intake = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
         || async {

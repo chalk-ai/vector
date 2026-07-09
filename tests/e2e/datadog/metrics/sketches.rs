@@ -108,8 +108,9 @@ async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
     info!("getting sketch payloads");
 
     // Retry until we have sketch data or hit max retries. This is to ensure
-    // events flow through to fakeintake before asking for them.
-    let sketches = poll_until(
+    // events flow through to fakeintake before asking for them, and that the
+    // data has stabilized (see `poll_until_stable`).
+    let sketches = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
         || async {
