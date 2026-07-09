@@ -826,9 +826,10 @@ impl AgentDDSketch {
                 // `sketch.count()` since both are derived from the same
                 // (possibly incomplete) buckets.
                 if true_count > 0 && true_count == u64::from(sketch.count()) {
-                    // Real histogram counts are always far below 2^52, so this
-                    // conversion never loses meaningful precision in practice.
-                    #[allow(clippy::cast_precision_loss)]
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason="Real histogram counts are always far below 2^52, so this conversion never loses meaningful precision in practice"
+                    )]
                     let true_count_f64 = true_count as f64;
                     sketch.avg = true_sum / true_count_f64;
                     // Interpolation places `min`/`max` at a bucket edge, which can
