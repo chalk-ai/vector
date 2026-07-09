@@ -517,6 +517,19 @@ fn reject_duplicate_values(
     Ok(())
 }
 
+fn reject_invalid_sum(
+    count: &u64,
+    sum: &f64,
+    description: &str,
+) -> Result<Option<f64>, vector_common::Error> {
+    if *count == 0 && *sum != 0.0 {
+        Err(format!("{description} sum ({sum}) must be zero when count is zero").into())
+    } else {
+        let sum = if *sum >= 0.0 { Some(*sum) } else { None };
+        Ok(sum)
+    }
+}
+
 struct OTLPDataConverter {
     kind: MetricKind,
     timestamp_ns: u64,
@@ -540,7 +553,7 @@ impl OTLPDataConverter {
         }
     }
 
-    fn metric_value_to_data(&self, value: &MetricValue) -> Result<Data, vector_common::Error> {
+    fn metric_value_to_data(self, value: &MetricValue) -> Result<Data, vector_common::Error> {
         match value {
             MetricValue::Counter { value } => Ok(self.counter(value)),
             MetricValue::Gauge { value } => Ok(self.gauge(value)),
@@ -566,11 +579,11 @@ impl OTLPDataConverter {
             }
         }
     }
-    fn counter(&self, value: &f64) -> Data {
+    fn counter(self, value: &f64) -> Data {
         let is_monotonic = matches!(self.kind, MetricKind::Absolute) || *value >= 0.0;
         Data::Sum(Sum {
             data_points: vec![NumberDataPoint {
-                attributes: self.attrs.clone(),
+                attributes: self.attrs,
                 start_time_unix_nano: self.start_time_ns,
                 time_unix_nano: self.timestamp_ns,
                 value: Some(NumberDataPointValue::AsDouble(*value)),
@@ -582,12 +595,11 @@ impl OTLPDataConverter {
         })
     }
 
-    fn gauge(&self, value: &f64) -> Data {
-        let attrs = self.attrs.clone();
+    fn gauge(self, value: &f64) -> Data {
         match self.kind {
             MetricKind::Absolute => Data::Gauge(Gauge {
                 data_points: vec![NumberDataPoint {
-                    attributes: attrs,
+                    attributes: self.attrs,
                     start_time_unix_nano: 0,
                     time_unix_nano: self.timestamp_ns,
                     value: Some(NumberDataPointValue::AsDouble(*value)),
@@ -597,7 +609,7 @@ impl OTLPDataConverter {
             }),
             MetricKind::Incremental => Data::Sum(Sum {
                 data_points: vec![NumberDataPoint {
-                    attributes: attrs,
+                    attributes: self.attrs,
                     start_time_unix_nano: self.start_time_ns,
                     time_unix_nano: self.timestamp_ns,
                     value: Some(NumberDataPointValue::AsDouble(*value)),
@@ -611,18 +623,19 @@ impl OTLPDataConverter {
     }
 
     fn aggregated_histogram(
-        &self,
+        self,
         buckets: &[Bucket],
         count: &u64,
         sum: &f64,
     ) -> Result<Data, vector_common::Error> {
-        let attrs = self.attrs.clone();
         let mut buckets = buckets.to_owned();
         buckets.sort_by(|a, b| a.upper_limit.total_cmp(&b.upper_limit));
+
         reject_duplicate_values(
             buckets.iter().map(|bucket| bucket.upper_limit),
             "histogram bucket upper_limit",
         )?;
+        let sum = reject_invalid_sum(count, sum, "histogram")?;
 
         let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
         let has_inf_bucket = buckets
@@ -650,15 +663,9 @@ impl OTLPDataConverter {
             .into());
         }
 
-        if *count == 0 && *sum != 0.0 {
-            return Err(format!("histogram sum ({sum}) must be zero when count is zero").into());
-        }
-
-        let sum = if *sum >= 0.0 { Some(*sum) } else { None };
-
         Ok(Data::Histogram(Histogram {
             data_points: vec![HistogramDataPoint {
-                attributes: attrs,
+                attributes: self.attrs,
                 start_time_unix_nano: self.start_time_ns,
                 time_unix_nano: self.timestamp_ns,
                 count: *count,
@@ -675,7 +682,7 @@ impl OTLPDataConverter {
     }
 
     fn aggregated_summary(
-        &self,
+        self,
         quantiles: &[Quantile],
         count: &u64,
         sum: &f64,
@@ -683,6 +690,7 @@ impl OTLPDataConverter {
         if matches!(self.kind, MetricKind::Incremental) {
             return Err("OTLP serializer does not support Delta summary metric values".into());
         }
+
         if let Some(quantile) = quantiles
             .iter()
             .find(|q| !(0.0..=1.0).contains(&q.quantile))
@@ -702,10 +710,12 @@ impl OTLPDataConverter {
         }
         let mut quantiles = quantiles.to_owned();
         quantiles.sort_by(|a, b| a.quantile.total_cmp(&b.quantile));
+
         reject_duplicate_values(
             quantiles.iter().map(|quantile| quantile.quantile),
             "summary quantile",
         )?;
+        let sum = reject_invalid_sum(count, sum, "summary")?;
 
         let quantile_values = quantiles
             .iter()
@@ -717,11 +727,11 @@ impl OTLPDataConverter {
 
         Ok(Data::Summary(Summary {
             data_points: vec![SummaryDataPoint {
-                attributes: self.attrs.clone(),
+                attributes: self.attrs,
                 start_time_unix_nano: 0,
                 time_unix_nano: self.timestamp_ns,
                 count: *count,
-                sum: *sum,
+                sum: sum.unwrap_or_default(),
                 quantile_values,
                 flags: 0,
             }],
@@ -735,8 +745,7 @@ fn metric_value_to_data(
     start_time_ns: u64,
     attrs: Vec<KeyValue>,
 ) -> Result<Data, vector_common::Error> {
-    OTLPDataConverter::new(kind, timestamp_ns, start_time_ns, attrs.clone())
-        .metric_value_to_data(value)
+    OTLPDataConverter::new(kind, timestamp_ns, start_time_ns, attrs).metric_value_to_data(value)
 }
 
 pub fn metric_event_to_export_request(

@@ -100,9 +100,6 @@ impl Encoder<Event> for OtlpSerializer {
     type Error = vector_common::Error;
 
     fn encode(&mut self, event: Event, buffer: &mut BytesMut) -> Result<(), Self::Error> {
-        // Determine which descriptor to use based on top-level OTLP fields
-        // This handles events that were decoded with use_otlp_decoding enabled
-        // The deserializer uses use_json_names: true, so fields are in camelCase
         match &event {
             Event::Log(log) => {
                 if log.contains(RESOURCE_LOGS_JSON_FIELD) {
