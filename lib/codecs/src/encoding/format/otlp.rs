@@ -128,8 +128,8 @@ impl Encoder<Event> for OtlpSerializer {
                 }
             }
             Event::Metric(metric) => {
-                let request = metric_event_to_export_request(metric.clone())?;
-                buffer.extend_from_slice(&request.encode_to_vec());
+                let request = metric_event_to_export_request(metric)?;
+                request.encode(buffer)?;
                 Ok(())
             }
         }

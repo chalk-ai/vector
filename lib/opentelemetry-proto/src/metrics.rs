@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use vector_core::event::{
     Event, Metric as MetricEvent, MetricKind, MetricTags, MetricValue,
-    metric::{Bucket, Quantile, TagValue, TagValueSet},
+    metric::{Bucket, Quantile, TagValue},
 };
 
 use super::common::tag_set_to_any_value;
@@ -444,16 +444,6 @@ impl ToF64 for Option<NumberDataPointValue> {
     }
 }
 
-/// Used only for the scalar `scope.name`/`scope.version` fields; multi-value attributes go through
-/// [`tag_set_to_any_value`].
-fn scalar_tag_value(tag_set: &TagValueSet) -> Option<TagValue> {
-    match tag_set {
-        TagValueSet::Empty => None,
-        TagValueSet::Single(tag) => Some(tag.clone()),
-        TagValueSet::Set(set) => set.iter().last().cloned(),
-    }
-}
-
 /// Splits a metric's tags back into the `Resource`, `InstrumentationScope`, and data point
 /// `attributes` they were flattened from by [`build_metric_tags`].
 pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, Vec<KeyValue>) {
@@ -467,19 +457,13 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
         // `scope.name`/`scope.version` are scalar string fields on `InstrumentationScope`,
         // not attributes, so they collapse to a single representative value.
         if key == "scope.name" {
-            scope_name = scalar_tag_value(tag_set)
-                .and_then(TagValue::into_option)
-                .unwrap_or_default();
+            scope_name = tag_set.as_single().unwrap_or_default().to_string();
             continue;
         } else if key == "scope.version" {
-            scope_version = scalar_tag_value(tag_set)
-                .and_then(TagValue::into_option)
-                .unwrap_or_default();
+            scope_version = tag_set.as_single().unwrap_or_default().to_string();
             continue;
         }
 
-        // Multi-value tags are emitted as a single `KeyValue` with an `ArrayValue` (see
-        // `tag_set_to_any_value`) to honor OTLP's attribute-key-uniqueness contract.
         let Some(value) = tag_set_to_any_value(tag_set) else {
             continue;
         };
@@ -756,7 +740,7 @@ fn metric_value_to_data(
 }
 
 pub fn metric_event_to_export_request(
-    metric: MetricEvent,
+    metric: &MetricEvent,
 ) -> Result<ExportMetricsServiceRequest, vector_common::Error> {
     let (timestamp_ns, start_time_ns): (u64, u64) = match metric.timestamp() {
         Some(timestamp) => {
@@ -878,7 +862,7 @@ mod tests {
         let interval_ns = 10_000_000; // 10ms
 
         let sum_point = |metric: MetricEvent| {
-            let request = metric_event_to_export_request(metric).expect("counter should encode");
+            let request = metric_event_to_export_request(&metric).expect("counter should encode");
             match request.resource_metrics[0].scope_metrics[0].metrics[0]
                 .data
                 .clone()
@@ -937,7 +921,7 @@ mod tests {
         )
         .with_timestamp(Some(Utc.timestamp_nanos(-1_000)));
 
-        assert!(metric_event_to_export_request(metric).is_err());
+        assert!(metric_event_to_export_request(&metric).is_err());
     }
 
     #[test]
@@ -952,7 +936,7 @@ mod tests {
         .with_namespace(Some("vector"))
         .with_timestamp(Some(Utc::now()));
 
-        let request = metric_event_to_export_request(metric).expect("should encode");
+        let request = metric_event_to_export_request(&metric).expect("should encode");
         assert_eq!(
             request.resource_metrics[0].scope_metrics[0].metrics[0].name,
             "vector.requests"
@@ -965,7 +949,7 @@ mod tests {
             MetricValue::Gauge { value: 1.0 },
         )
         .with_timestamp(Some(Utc::now()));
-        let request = metric_event_to_export_request(metric).expect("should encode");
+        let request = metric_event_to_export_request(&metric).expect("should encode");
         assert_eq!(
             request.resource_metrics[0].scope_metrics[0].metrics[0].name,
             "requests"

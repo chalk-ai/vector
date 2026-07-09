@@ -37,29 +37,31 @@ impl From<PBValue> for TagValue {
     }
 }
 
-pub fn tag_value_to_any_value(tag: &TagValue) -> AnyValue {
-    match tag {
-        TagValue::Value(s) => AnyValue {
-            value: Some(PBValue::StringValue(s.clone())),
-        },
-        TagValue::Bare => AnyValue { value: None },
+impl From<&TagValue> for AnyValue {
+    fn from(tag: &TagValue) -> Self {
+        match tag {
+            TagValue::Value(s) => Self {
+                value: Some(PBValue::StringValue(s.clone())),
+            },
+            TagValue::Bare => Self { value: None },
+        }
     }
 }
 
 pub fn str_to_key_value(key: &str, val: &TagValue) -> KeyValue {
     KeyValue {
         key: key.to_string(),
-        value: Some(tag_value_to_any_value(val)),
+        value: Some(val.into()),
     }
 }
 
 pub fn tag_set_to_any_value(tag_set: &TagValueSet) -> Option<AnyValue> {
     match tag_set {
         TagValueSet::Empty => None,
-        TagValueSet::Single(tag) => Some(tag_value_to_any_value(tag)),
+        TagValueSet::Single(tag) => Some(tag.into()),
         TagValueSet::Set(set) => Some(AnyValue {
             value: Some(PBValue::ArrayValue(ArrayValue {
-                values: set.iter().map(tag_value_to_any_value).collect(),
+                values: set.iter().map(Into::into).collect(),
             })),
         }),
     }
