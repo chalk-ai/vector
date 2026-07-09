@@ -2,48 +2,48 @@
 date: "2026-07-01"
 title: Load balancing and scaling Vector on Kubernetes
 short: K8s autoscaling
-description: Observe a single Vector pod hit its CPU ceiling, eliminate it by manually scaling horizontally behind an L7 load balancer, then automate that scaling with the Kubernetes HPA finding its own equilibrium.
+description: Observe a single Vector pod reaching its CPU ceiling, eliminate the ceiling by manually scaling horizontally behind an L7 load balancer, and then automate that scaling with the Kubernetes HPA to reach a stable replica count that maintains target average CPU utilization.
 authors: ["thomasqueirozb"]
 domain: platforms
 weight: 7
 tags: ["level up", "guides", "guide", "kubernetes", "load balancing", "nginx"]
 ---
 
-This guide walks through observing a single Vector pod hit its CPU ceiling while
-parsing [Apache Common Log format](https://httpd.apache.org/docs/current/logs.html#common), then eliminating that ceiling by manually
-scaling horizontally behind [Nginx](https://www.nginx.com/). Then we're going to set up automatic
-scaling using Kubernetes [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
-(HPA) and let it find its own equilibrium.
+In this guide, we'll show how a single Vector pod reaches its CPU ceiling while
+parsing [Apache Common Log Format](https://httpd.apache.org/docs/current/logs.html#common) data. We'll then eliminate that ceiling by manually
+scaling Vector horizontally behind the [NGINX](https://www.nginx.com/) Ingress Controller, an L7 load balancer. Finally, we'll set up automatic
+scaling by using the Kubernetes [Horizontal Pod Autoscaler (HPA)](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+to reach a stable replica count that maintains a target average CPU utilization of 70%.
 
 All steps are reproducible using the manifests and Helm values in this repository.
 
 ## Background
 
-Vector's `parse_regex!` transform is CPU-bound: for every incoming log line it
+Vector's `parse_regex!` transform is CPU-bound: For every incoming log line, the transform
 executes a compiled Rust regex, allocates capture-group values, and writes a
-structured event downstream.  A single Vector pod limited to 1 vCPU will
-saturate that core under sustained parallel HTTP load due to the regex
+structured event downstream. Under sustained parallel HTTP load, a single Vector pod limited to 1 vCPU will
+saturate that core due to the regex
 parsing.
 
-When saturation is reached, Vector applies **backpressure rather than dropping
+When CPU saturation occurs, Vector applies **backpressure instead of dropping
 events**. The HTTP source stops accepting new requests; Nginx stalls the load
 generator's connections.
 
 ## Test environment
 
-The benchmark was measured on a **[K3s](https://k3s.io/) single-node cluster on an [EC2](https://aws.amazon.com/ec2/) c5.4xlarge**
-(16 vCPU, 32 GiB RAM). A single-node cluster was chosen so that latency and
-network overhead are not a factor and collected metrics are precise.
-
+To evaluate Vector's scaling behavior under a sustained CPU-bound workload, we used a **[K3s](https://k3s.io/) single-node cluster hosted on an [Amazon EC2](https://aws.amazon.com/ec2/) c5.4xlarge** instance
+(16 vCPU, 32 GiB RAM). We chose a single-node cluster to eliminate latency and
+network overhead as factors, making the collected metrics more precise.
+We used the following configuration for the tests:
 - **Load generator:** [lading](https://github.com/DataDog/lading),
   generating `apache_common` log lines at a configurable byte rate. It
-  maintains persistent parallel connections and is capable of sustained
+  maintains persistent parallel connections and is capable of generating sustained
   high-throughput HTTP load.
-- **Load level:** **55 MiB/s** is used across all tests to get comparable
+- **Load level:** **55 MiB/s** across all tests to get comparable
   throughput measurements.
-- **Vector pod resources:** **1 vCPU / 2 GiB**, with `requests == limits`
-  (Guaranteed QoS), so CPU throttling, not memory pressure or scheduling
-  variance, is the only bottleneck under test.
+- **Vector pod resources:** **1 vCPU and 2 GiB of memory**, with `requests == limits`
+  (Guaranteed QoS) to ensure that CPU throttling, not memory pressure or scheduling
+  variance, was the only bottleneck tested.
 
 ## Architecture
 
@@ -67,20 +67,19 @@ network overhead are not a factor and collected metrics are precise.
 
 ## Why HTTP + L7 load balancing?
 
-A plain TCP connection has no request boundary: once a client is connected to
-a pod, a Kubernetes ClusterIP Service (which load-balances at L4) has no
-opportunity to redistribute that traffic to a newly scaled-up pod. HTTP
-defines a request boundary, so an L7 load balancer like Nginx can dispatch
-each request independently, letting new pods pick up load as soon as they're
-Ready.
+A plain TCP connection has no request boundary: Once a client is connected to
+a pod, a Kubernetes ClusterIP Service (which load-balances at L4) cannot
+redistribute that traffic to a newly created pod. By contrast, HTTP
+defines a request boundary, so an L7 load balancer such as the NGINX Ingress Controller can route
+each request independently. As new pods become Ready, they can pick up load immediately.
 
-A similar setup using [HAProxy](https://www.haproxy.org/) in TCP mode has the same problem: it
+A similar setup using [HAProxy](https://www.haproxy.org/) in TCP mode has the same limitation as a Kubernetes ClusterIP Service: It
 load-balances at the connection level, so a single producer's connection stays
-pinned to one consumer for its lifetime, and can leave some consumers starved
+pinned to one consumer for its lifetime and can leave some consumers starved
 of data entirely.
 
-This is why we install an Nginx ingress in front of Vector instead of exposing
-it through a plain ClusterIP Service.
+This is why we installed an NGINX Ingress Controller in front of Vector instead of exposing
+Vector through a ClusterIP Service.
 
 ## Prerequisites
 
@@ -88,17 +87,17 @@ it through a plain ClusterIP Service.
 - [`helm`](https://helm.sh/) ≥ 3.0
 - At least 9 allocatable CPUs total (8 for Vector at max scale, 0.5 for the consumer, 0.2 for the producer)
 - [`grpcurl`](https://github.com/fullstorydev/grpcurl) for metric collection
-- [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed — required for `kubectl top pods` and HPA CPU targets. K3s bundles it by default; on other clusters run `kubectl top nodes` to verify it is available before starting.
+- [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed (This is required for `kubectl top pods` and HPA CPU targets. K3s bundles `metrics-server` by default. On other clusters, run `kubectl top nodes` to verify that `metrics-server` is available before you start.)
 
-## How the metrics are collected
+## Collecting throughput and CPU metrics
 
-Each Vector pod exposes [`ObservabilityService`](https://github.com/vectordotdev/vector/blob/master/proto/vector/observability.proto) on port 8686 ([gRPC](https://grpc.io/)). The
-measurement approach used for every phase below is: port-forward to a pod,
-take two `GetComponents` samples 30 s apart, and diff `receivedBytesTotal` on
-the `in` source component to get a per-pod throughput rate. Per-pod CPU is
+Each Vector pod exposes [`ObservabilityService`](https://github.com/vectordotdev/vector/blob/master/proto/vector/observability.proto) on port 8686 ([gRPC](https://grpc.io/)). For
+each phase of our testing, we measured throughput by port-forwarding to a pod,
+capturing two `GetComponents` samples 30 seconds apart, and calculating the difference in `receivedBytesTotal` for
+the `in` source component to determine a per-pod throughput rate. Per-pod CPU was
 read via `kubectl top pods` and averaged across all Vector pods.
 
-For example, against a single pod:
+The following commands collect the data used to calculate throughput for a single pod:
 
 ```bash
 kubectl port-forward -n vector-perf pod/<pod-name> 18686:8686 &
@@ -110,15 +109,15 @@ grpcurl -plaintext -d '{}' localhost:18686 \
   vector.observability.v1.ObservabilityService/GetComponents > t30.json
 ```
 
-Diffing `receivedBytesTotal` for the `in` component between `t0.json` and
-`t30.json`, then dividing by 30 s, gives that pod's throughput.
+The difference in `receivedBytesTotal` for the `in` component between `t0.json` and
+`t30.json`, divided by 30 seconds, gives that pod's throughput.
 
-See [Replicating these results](#replicating-these-results) below for a link to the script that
-automates this.
+See [Replicating these results](#replicating-these-results) for a link to the script that
+automates this process.
 
 ## Setup
 
-Create the namespace and the consumer that drains everything Vector forwards to it:
+The following manifests create the namespace and deploy the consumer that drains all data forwarded by Vector:
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/namespace.yaml" dir="true" >}}
 
@@ -140,10 +139,10 @@ helm repo add vectordotdev https://helm.vector.dev
 helm repo update
 ```
 
-## Phase 1 — Single pod
+## Phase 1: Single pod
 
-Vector is installed with the shared base Helm values, which configure the
-`http_server` source, the `parse_regex!` transform, and the `socket` sink to
+The following Helm values configure Vector with an
+`http_server` source, the `parse_regex!` transform, and the `socket` sink that forwards data to
 the consumer:
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/values.yaml" dir="true" >}}
@@ -165,9 +164,9 @@ generate `apache_common` log lines at 55 MiB/s across 100 parallel connections:
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/producer.yaml" dir="true" >}}
 
-55 MiB/s is expected to overwhelm a single pod's regex-parsing capacity, so
-Vector should back-pressure lading down to whatever it can actually process.
-
+At 55 MiB/s, the workload is expected to overwhelm a single pod's regex-parsing capacity.
+When the pod reaches CPU saturation, Vector applies backpressure, reducing the rate at which lading can send data.
+The resulting throughput and CPU utilization are shown in the following table:
 <!-- RESULTS-SINGLE-START -->
 
 | Metric | Value |
@@ -179,9 +178,9 @@ Vector should back-pressure lading down to whatever it can actually process.
 
 <!-- RESULTS-SINGLE-END -->
 
-The pod is pinned at its 1000m CPU limit and throughput tops out at
-16.64 MiB/s, confirming the expected CPU ceiling. That per-pod figure is the
-baseline the next two phases are measured against.
+The pod is pinned at its 1000m CPU limit, and throughput tops out at
+16.64 MiB/s, confirming the expected CPU ceiling. This per-pod throughput is the
+baseline that the next two phases are measured against.
 
 ## Phase 2 — Three pods
 
