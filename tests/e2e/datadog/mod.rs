@@ -1,6 +1,7 @@
 pub mod logs;
 pub mod metrics;
 
+use std::future::Future;
 use std::time::Duration;
 
 use reqwest::{Client, Method};
@@ -12,6 +13,39 @@ use tracing::{trace, warn};
 // after the compose services start, so transient request failures are retried.
 const MAX_FETCH_ATTEMPTS: usize = 10;
 const FETCH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+// Shared wait between polling attempts for tests that need to retry until
+// expected data has arrived at fakeintake (data itself may take a moment to
+// flow through the pipeline, on top of any transient connection issues
+// already handled by `get_fakeintake_payloads`). How many attempts are needed
+// varies per test, so `max_retries` is left to the caller.
+const WAIT_INTERVAL: Duration = Duration::from_secs(1);
+
+// Calls `fetch` up to `max_retries` times, sleeping `wait` between attempts,
+// until `is_complete` reports the fetched value is ready to use.
+pub(super) async fn poll_until<T, F, Fut, P>(
+    max_retries: usize,
+    wait: Duration,
+    mut fetch: F,
+    mut is_complete: P,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = T>,
+    P: FnMut(&T) -> bool,
+{
+    assert!(max_retries > 0, "max_retries must be greater than zero");
+
+    let mut value = fetch().await;
+    let mut attempt = 1;
+    while attempt < max_retries && !is_complete(&value) {
+        tokio::time::sleep(wait).await;
+        value = fetch().await;
+        attempt += 1;
+    }
+
+    value
+}
 
 fn fake_intake_vector_address() -> String {
     std::env::var("FAKE_INTAKE_VECTOR_ENDPOINT")

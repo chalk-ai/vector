@@ -82,6 +82,11 @@ fn has_distribution(sketches: &SketchIntake) -> bool {
 
 // whether the sketch intake looks complete, i.e. the expected distribution
 // metric has arrived. Used to decide whether it's worth continuing to poll fakeintake.
+//
+// This is tied to the dogstatsd emitter (tests/e2e/datadog-metrics/dogstatsd_client/client.py),
+// which always emits a distribution metric once per run. fakeintake has no "wait until this
+// test's data is complete" API of its own, so we have to infer readiness from what the emitter
+// is known to send.
 fn sketch_intake_is_complete(sketches: &SketchIntake) -> bool {
     !sketches.is_empty() && has_distribution(sketches)
 }
@@ -104,26 +109,25 @@ async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
 
     // Retry until we have sketch data or hit max retries. This is to ensure
     // events flow through to fakeintake before asking for them.
-    let mut sketches = SketchIntake::new();
-    for _ in 0..MAX_RETRIES {
-        let payloads =
-            get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT).await;
+    let sketches = poll_until(
+        MAX_RETRIES,
+        WAIT_INTERVAL,
+        || async {
+            let payloads =
+                get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT)
+                    .await;
 
-        info!("unpacking payloads");
-        let payloads = unpack_proto_payloads(&payloads)
-            .await
-            .expect("Failed to unpack sketch payloads");
+            info!("unpacking payloads");
+            let payloads: Vec<SketchPayload> = unpack_proto_payloads(&payloads)
+                .await
+                .expect("Failed to unpack sketch payloads");
 
-        info!("generating sketch intake");
-        sketches = generate_sketch_intake(payloads);
-
-        if sketch_intake_is_complete(&sketches) {
-            break;
-        }
-
-        info!("Sketch payloads incomplete, retrying...");
-        tokio::time::sleep(WAIT_INTERVAL).await;
-    }
+            info!("generating sketch intake");
+            generate_sketch_intake(payloads)
+        },
+        |sketches: &SketchIntake| sketch_intake_is_complete(sketches),
+    )
+    .await;
 
     common_sketch_assertions(&sketches);
 

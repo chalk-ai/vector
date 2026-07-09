@@ -109,6 +109,11 @@ fn found_metric_types(series: &SeriesIntake) -> [(bool, &'static str); 4] {
 
 // whether the series intake looks complete, i.e. every expected metric type
 // has arrived. Used to decide whether it's worth continuing to poll fakeintake.
+//
+// This is tied to the dogstatsd emitter (tests/e2e/datadog-metrics/dogstatsd_client/client.py),
+// which always emits exactly these four metric types once per run. fakeintake has no
+// "wait until this test's data is complete" API of its own, so we have to infer readiness
+// from what the emitter is known to send.
 fn series_intake_is_complete(series: &SeriesIntake) -> bool {
     !series.is_empty() && found_metric_types(series).iter().all(|(found, _)| *found)
 }
@@ -193,26 +198,27 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
 
     // Retry until we have series data or hit max retries. This is to ensure
     // events flow through to fakeintake before asking for them.
-    let mut intake = SeriesIntake::new();
-    for _ in 0..MAX_RETRIES {
-        let payloads =
-            get_fakeintake_payloads::<FakeIntakeResponseJson>(&address, SERIES_ENDPOINT_V1).await;
+    let intake = poll_until(
+        MAX_RETRIES,
+        WAIT_INTERVAL,
+        || async {
+            let payloads = get_fakeintake_payloads::<FakeIntakeResponseJson>(
+                &address,
+                SERIES_ENDPOINT_V1,
+            )
+            .await;
 
-        info!("unpacking payloads");
-        let payloads = unpack_v1_series(&payloads.payloads);
-        info!("converting payloads");
-        let payloads = convert_v1_payloads_v2(&payloads);
+            info!("unpacking payloads");
+            let payloads = unpack_v1_series(&payloads.payloads);
+            info!("converting payloads");
+            let payloads = convert_v1_payloads_v2(&payloads);
 
-        info!("generating series intake");
-        intake = generate_series_intake(&payloads);
-
-        if series_intake_is_complete(&intake) {
-            break;
-        }
-
-        info!("Series payloads incomplete, retrying...");
-        tokio::time::sleep(WAIT_INTERVAL).await;
-    }
+            info!("generating series intake");
+            generate_series_intake(&payloads)
+        },
+        |intake: &SeriesIntake| series_intake_is_complete(intake),
+    )
+    .await;
 
     common_series_assertions(&intake);
 
@@ -226,26 +232,27 @@ async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
 
     // Retry until we have series data or hit max retries. This is to ensure
     // events flow through to fakeintake before asking for them.
-    let mut intake = SeriesIntake::new();
-    for _ in 0..MAX_RETRIES {
-        let payloads =
-            get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SERIES_ENDPOINT_V2).await;
+    let intake = poll_until(
+        MAX_RETRIES,
+        WAIT_INTERVAL,
+        || async {
+            let payloads = get_fakeintake_payloads::<FakeIntakeResponseRaw>(
+                &address,
+                SERIES_ENDPOINT_V2,
+            )
+            .await;
 
-        info!("unpacking payloads");
-        let payloads = unpack_proto_payloads::<MetricPayload>(&payloads)
-            .await
-            .expect("Failed to unpack v2 series payloads");
+            info!("unpacking payloads");
+            let payloads = unpack_proto_payloads::<MetricPayload>(&payloads)
+                .await
+                .expect("Failed to unpack v2 series payloads");
 
-        info!("generating series intake");
-        intake = generate_series_intake(&payloads);
-
-        if series_intake_is_complete(&intake) {
-            break;
-        }
-
-        info!("Series payloads incomplete, retrying...");
-        tokio::time::sleep(WAIT_INTERVAL).await;
-    }
+            info!("generating series intake");
+            generate_series_intake(&payloads)
+        },
+        |intake: &SeriesIntake| series_intake_is_complete(intake),
+    )
+    .await;
 
     common_series_assertions(&intake);
 

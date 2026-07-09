@@ -1,5 +1,4 @@
 use std::io::Read;
-use std::time::Duration;
 
 use async_compression::tokio::bufread::{ZstdDecoder, ZstdEncoder};
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -25,7 +24,6 @@ use super::*;
 // of that before metrics reach fakeintake. 45s covers that ~25s worst case
 // with margin for network/processing overhead.
 const MAX_RETRIES: usize = 45;
-const WAIT_INTERVAL: Duration = Duration::from_secs(1);
 
 async fn decompress_payload(payload: &[u8]) -> std::io::Result<Vec<u8>> {
     if is_zstd(payload) {
