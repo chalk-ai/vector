@@ -26,8 +26,9 @@ saturate that core due to the regex
 parsing.
 
 When CPU saturation occurs, Vector applies **backpressure instead of dropping
-events**. The HTTP source stops accepting new requests; Nginx stalls the load
-generator's connections.
+events**. Vector's `http_server` source keeps accepting connections but stalls
+on responses until it can process the backlog, so the NGINX Ingress
+Controller and the load generator experience stalled connections.
 
 ## Test environment
 
