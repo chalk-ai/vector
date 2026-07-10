@@ -85,7 +85,7 @@ Vector through a ClusterIP Service.
 ## Prerequisites
 
 - [`kubectl`](https://kubernetes.io/docs/reference/kubectl/) configured against a target cluster
-- [`helm`](https://helm.sh/) ≥ 3.0
+- [`helm`](https://helm.sh/) version 3.0 or later
 - At least 9 allocatable CPUs total (8 for Vector at max scale, 0.5 for the consumer, 0.2 for the producer)
 - [`grpcurl`](https://github.com/fullstorydev/grpcurl) for metric collection
 - [Kubernetes Metrics API](https://github.com/kubernetes-sigs/metrics-server) (`metrics-server`) installed (This is required for `kubectl top pods` and HPA CPU targets. K3s bundles `metrics-server` by default. On other clusters, run `kubectl top nodes` to verify that `metrics-server` is available before you start.)
@@ -155,8 +155,8 @@ kubectl apply -f manifests/ingress.yaml
 kubectl apply -f manifests/producer.yaml
 ```
 
-The ingress routes HTTP POSTs to the Vector service at the request level (L7),
-which is what lets the HPA find equilibrium in Phase 4:
+The following Ingress routes HTTP POST requests to the Vector Service at the request level (L7),
+so every pod receives a share of traffic as soon as it's Ready, independent of how or why the replica count changes:
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/ingress.yaml" dir="true" >}}
 
@@ -187,6 +187,7 @@ baseline that the next two phases are measured against.
 
 ## Phase 2: 3 pods
 
+The following commands scale the deployment to three replicas:
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=3
 kubectl rollout status deployment/vector -n vector-perf
