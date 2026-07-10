@@ -166,7 +166,9 @@ generate `apache_common` log lines at 55 MiB/s across 100 parallel connections:
 
 At 55 MiB/s, the workload is expected to overwhelm a single pod's regex-parsing capacity.
 When the pod reaches CPU saturation, Vector applies backpressure, reducing the rate at which lading can send data.
+
 The resulting throughput and CPU utilization are shown in the following table:
+
 <!-- RESULTS-SINGLE-START -->
 
 | Metric | Value |
@@ -189,9 +191,8 @@ kubectl scale deployment vector -n vector-perf --replicas=3
 kubectl rollout status deployment/vector -n vector-perf
 ```
 
-55 MiB/s > 3 × 16.64 MiB/s = 49.92 MiB/s combined capacity.  All three pods are
-still fully saturated. Adding pods increases throughput, but the ceiling
-hasn't been reached yet.
+At 55 MiB/s, the workload still exceeds the combined throughput ceiling of three
+pods (3 × 16.64 MiB/s = 49.92 MiB/s). All three pods remain still fully saturated.
 
 <!-- RESULTS-LB-START -->
 
@@ -213,7 +214,7 @@ kubectl rollout status deployment/vector -n vector-perf
 ```
 
 Eight pods provide a combined throughput ceiling of approximately 133.1 MiB/s (8 × 16.64 MiB/s = 133.1 MiB/s), well above the workload's 55 MiB/s. The bottleneck is
-the bottleneck; all 55 MiB/s flows through and pods have ample headroom.
+eliminated. All 55 MiB/s flows through, and the pods have ample CPU headroom.
 
 <!-- RESULTS-8W-START -->
 
@@ -325,7 +326,7 @@ leaving each pod with roughly 53% of unused CPU capacity.
 
 4. **The HPA determines the right pod count automatically.**  With HTTP and L7 routing,
    each new pod starts receiving traffic immediately after becoming Ready.
-   
+
 
 ---
 
