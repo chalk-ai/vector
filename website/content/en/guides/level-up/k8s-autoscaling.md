@@ -41,6 +41,7 @@ To evaluate Vector's scaling behavior under a sustained CPU-bound workload, we u
 (16 vCPU, 32 GiB RAM). We chose a single-node cluster to eliminate latency and
 network overhead as factors, making the collected metrics more precise.
 We used the following configuration for the tests:
+
 - **Load generator:** [lading](https://github.com/DataDog/lading),
   generating `apache_common` log lines at a configurable byte rate. It
   maintains persistent parallel connections and is capable of generating sustained
@@ -210,6 +211,7 @@ baseline that the next two phases are measured against.
 ## Phase 2: 3 pods
 
 The following commands scale the deployment to three replicas:
+
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=3
 kubectl rollout status deployment/vector -n vector-perf
@@ -231,7 +233,9 @@ pods (3 × 16.64 MiB/s = 49.92 MiB/s). All three pods remain still fully saturat
 <!-- RESULTS-LB-END -->
 
 ## Phase 3: 8 pods
+
 The following commands scale the deployment to eight replicas:
+
 ```bash
 kubectl scale deployment vector -n vector-perf --replicas=8
 kubectl rollout status deployment/vector -n vector-perf
