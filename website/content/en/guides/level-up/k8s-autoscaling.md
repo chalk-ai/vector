@@ -319,18 +319,16 @@ leaving each pod with roughly 53% of unused CPU capacity.
 
 ## Key takeaways
 
-1. **A single pod caps at its CPU limit.**  At 55 MiB/s load, 1 pod can absorb
-   only ~16.6 MiB/s.  Back-pressure prevents any event loss.
+1. **A CPU-bound workload eventually reaches the processing capacity of a
+   single Vector pod**. When that happens, backpressure prevents any event
+   loss.
 
-2. **L7 per-request routing distributes load uniformly.**  Because Nginx
-   dispatches each HTTP request independently, every pod, old or newly
-   Ready, receives a share of traffic proportional to the current replica
+2. **L7 per-request routing distributes load uniformly.**  Because the NGINX Ingress Controller
+   routes each HTTP request independently, every pod (old or newly
+   Ready) receives a share of traffic proportional to the current replica
    count, with no idle pods.
 
-3. **Adding pods beyond the saturation point removes the bottleneck entirely.**
-   Phase 3 (8 pods) delivers the full 55 MiB/s with each pod at ~47% CPU.
-   The saturation crossover is at ~3.3 pods; at the 70% HPA target that
-   predicts ⌈3.3 / 0.70⌉ = 5 pods, exactly what Phase 4 observed.
+3. **Adding pods beyond the saturation point removes the CPU bottleneck entirely.** Once the workload is no longer CPU-bound, throughput increases while CPU utilization per pod decreases.
 
 4. **The HPA determines the right pod count automatically.**  With HTTP and L7 routing,
    each new pod starts receiving traffic immediately after becoming Ready.
