@@ -11,10 +11,6 @@ sources:
     # Native decoding yields Event::Metric, exercising the OTLP metric encoder.
     use_otlp_decoding: false
 
-  internal_metrics:
-    type: internal_metrics
-    scrape_interval_secs: 60
-
 sinks:
   otel_sink:
     inputs:
@@ -25,19 +21,3 @@ sinks:
       uri: http://otel-collector-sink:5318/v1/metrics
       encoding:
         codec: otlp
-
-  otel_file_sink:
-    type: file
-    path: "/output/opentelemetry-metrics-native/vector-file-sink.log"
-    inputs:
-      - source0.metrics
-    encoding:
-      codec: json
-
-  metrics_file_sink:
-    type: file
-    path: "/output/opentelemetry-metrics-native/vector-internal-metrics-sink.log"
-    inputs:
-      - internal_metrics
-    encoding:
-      codec: json

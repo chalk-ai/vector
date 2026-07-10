@@ -13,6 +13,8 @@ use vector_lib::opentelemetry::proto::{
 // and HTTP, so Vector sees each metric twice: 100 gauge + 100 sum data points.
 const EXPECTED_GAUGE: usize = 100;
 const EXPECTED_SUM: usize = 100;
+const EXPECTED_SCOPE_NAME: &str = "vector-e2e-metrics";
+const EXPECTED_SCOPE_VERSION: &str = "1.2.3";
 
 fn parse_export_metrics_request(content: &str) -> Result<ExportMetricsServiceRequest, String> {
     let mut merged = ExportMetricsServiceRequest {
@@ -48,6 +50,12 @@ fn tally_and_validate(request: &ExportMetricsServiceRequest) -> (usize, usize) {
 
     for rm in &request.resource_metrics {
         for sm in &rm.scope_metrics {
+            let scope = sm.scope.as_ref().expect("scope_metrics has no scope");
+            assert_eq!(scope.name, EXPECTED_SCOPE_NAME, "scope.name mismatch");
+            assert_eq!(
+                scope.version, EXPECTED_SCOPE_VERSION,
+                "scope.version mismatch"
+            );
             for metric in &sm.metrics {
                 assert!(!metric.name.is_empty(), "metric name is empty");
                 match metric.data.as_ref().expect("metric has no data") {

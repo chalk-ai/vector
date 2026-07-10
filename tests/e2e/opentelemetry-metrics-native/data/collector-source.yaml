@@ -7,6 +7,12 @@ receivers:
 
 processors:
   batch: {}
+  transform/scope:
+    metric_statements:
+      - context: scope
+        statements:
+          - set(name, "vector-e2e-metrics")
+          - set(version, "1.2.3")
 
 exporters:
   otlp/grpc:
@@ -23,5 +29,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [transform/scope, batch]
       exporters: [debug, otlp/grpc, otlphttp/vector]
