@@ -15,7 +15,8 @@ scaling Vector horizontally behind the [NGINX](https://www.nginx.com/) Ingress C
 scaling by using the Kubernetes [Horizontal Pod Autoscaler (HPA)](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
 to reach a stable replica count that maintains a target average CPU utilization of 70%.
 
-All steps are reproducible using the manifests and Helm values in this repository.
+All steps in this guide are reproducible. See [Replicating these results](#replicating-these-results)
+for the manifests and Helm values used.
 
 ## Background
 
@@ -334,6 +335,9 @@ leaving each pod with roughly 53% of unused CPU capacity.
 ---
 
 ## Replicating these results
+
+The manifests, Helm values, and scripts used throughout this guide live in
+[`k8s-autoscaling/`](https://github.com/vectordotdev/vector/tree/master/website/content/en/guides/level-up/k8s-autoscaling).
 
 The [`terraform/`](https://github.com/vectordotdev/vector/tree/master/website/content/en/guides/level-up/k8s-autoscaling/terraform)
 directory provisions the K3s single-node cluster (EC2 `c5.4xlarge`) that
