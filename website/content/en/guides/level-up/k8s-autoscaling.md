@@ -321,7 +321,7 @@ leaving each pod with roughly 53% of unused CPU capacity.
 
 1. **A CPU-bound workload eventually reaches the processing capacity of a
    single Vector pod**. When that happens, backpressure prevents any event
-   loss.
+   loss\*.
 
 2. **L7 per-request routing distributes load uniformly.**  Because the NGINX Ingress Controller
    routes each HTTP request independently, every pod (old or newly
@@ -333,6 +333,9 @@ leaving each pod with roughly 53% of unused CPU capacity.
 4. **The HPA determines the right pod count automatically.**  With HTTP and L7 routing,
    each new pod starts receiving traffic immediately after becoming Ready.
 
+\* This holds only as long as the stalled connection stays open. If the NGINX
+Ingress Controller or the load generator times out and closes a stalled
+connection first, the in-flight request's events are lost along with it.
 
 ---
 
