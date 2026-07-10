@@ -230,7 +230,7 @@ run_hpa_phase() {
     --cpu-percent=70 --min=1 --max=8 >/dev/null 2>&1
 
   local start elapsed
-  local last_replicas=1 scale_events=0 stable_count=0 last_stable=0
+  local last_replicas=1 scale_events=0 stable_count=0 last_stable=0 cpu_stable_count=0
   local replicas="" cpu_avg=""
   local max_elapsed=900
   start=$(date +%s)
@@ -265,14 +265,23 @@ run_hpa_phase() {
       stable_count=1
     fi
 
+    if [[ -n "$cpu_avg" && "$cpu_avg" -ge 63 && "$cpu_avg" -le 77 ]]; then
+      cpu_stable_count=$(( cpu_stable_count + 1 ))
+    else
+      cpu_stable_count=0
+    fi
+
     # Fail fast if HPA is blocked at maxReplicas with persistently high CPU.
     if [[ -n "$replicas" && "$replicas" == "8" && -n "$cpu_avg" && "$cpu_avg" -gt 77 && "$stable_count" -ge 3 ]]; then
       log "ERROR: HPA at maxReplicas=8 with ${cpu_avg}% CPU > 77% — cannot scale further; the cluster may be undersized."
       exit 1
     fi
 
-    # Equilibrium: same replica count for 75 s AND CPU within the HPA target band (≤ 80%).
-    if [[ "$stable_count" -ge 5 && "$elapsed" -gt 120 && -n "$cpu_avg" && "$cpu_avg" -le 80 ]]; then
+    # Equilibrium: same replica count for 75 s AND CPU within the HPA
+    # tolerance band (63-77%) for that entire streak, not just the latest
+    # sample. The lower bound rules out an over-provisioned state (e.g. an
+    # HPA overshoot) being mistaken for equilibrium while replicas hold steady.
+    if [[ "$stable_count" -ge 5 && "$cpu_stable_count" -ge 5 && "$elapsed" -gt 120 ]]; then
       log "Equilibrium: $replicas pods, ${cpu_avg}% CPU, ${elapsed}s elapsed."
       break
     fi
