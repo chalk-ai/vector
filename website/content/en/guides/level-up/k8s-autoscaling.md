@@ -290,8 +290,8 @@ We can now configure the HPA to find the minimum pod count that keeps CPU
 utilization around the 70% target.
 
 ```bash
-# Reset to 1 pod
-kubectl scale deployment vector -n vector-perf --replicas=1
+kubectl scale deployment vector -n vector-perf --replicas=1  # Reset to 1 pod
+kubectl rollout status deployment/vector -n vector-perf --timeout=120s  # Wait for scale-down
 
 # Create HPA (70% CPU target, 1–8 replicas)
 kubectl autoscale deployment vector -n vector-perf \
