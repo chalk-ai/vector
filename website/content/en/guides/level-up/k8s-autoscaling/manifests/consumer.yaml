@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: consumer
-          image: alpine/socat:latest
+          image: alpine/socat:1.8.1.3
           command:
             - socat
             - -u

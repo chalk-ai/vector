@@ -9,6 +9,12 @@ variable "cluster_suffix" {
   default     = ""
 }
 
+variable "ami_id" {
+  type        = string
+  description = "AMI to use for the K3s node. Defaults to the Ubuntu 22.04 (Jammy) AMI this guide's results were measured against; override if you change `region` or want a newer image."
+  default     = "ami-0d28727121d5d4a3c" # ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-20260702, us-east-1
+}
+
 variable "node_instance_type" {
   type = string
   # c5.4xlarge: 16 vCPU, 32 GiB
