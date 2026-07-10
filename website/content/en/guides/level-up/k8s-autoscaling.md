@@ -9,6 +9,10 @@ weight: 7
 tags: ["level up", "guides", "guide", "kubernetes", "load balancing", "nginx"]
 ---
 
+Running a CPU-intensive Vector pipeline in Kubernetes without the right setup
+is likely to hit a ceiling and fail under load. Vector is a fast, focused data
+pipeline, not a platform that handles scaling or load balancing automatically.
+
 In this guide, we'll show how a single Vector pod reaches its CPU ceiling while
 parsing [Apache Common Log Format](https://httpd.apache.org/docs/current/logs.html#common) data. We'll then eliminate that ceiling by manually
 scaling Vector horizontally behind the [NGINX](https://www.nginx.com/) Ingress Controller, an L7 load balancer. Finally, we'll set up automatic
