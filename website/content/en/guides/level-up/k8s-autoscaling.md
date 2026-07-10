@@ -288,8 +288,9 @@ Time to equilibrium: **196 seconds (approximately 3 minutes)**, 3 scale events, 
 **Throughput at equilibrium: 56.56 MiB/s, 444,744 ev/s, 5 pods, 71% average CPU.**
 
 The HPA settles at five pods: CPU converges from 97% immediately after the 3→5
-scale-up event to 71%, within the ±10% tolerance band (63–77%), and holds
-stable for three consecutive 15-second intervals.
+scale-up event to 71%, within the ±10% tolerance band (63–77%) set by the
+[`--horizontal-pod-autoscaler-tolerance`](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)
+flag's `0.1` default, and holds stable for three consecutive 15-second intervals.
 
 <!-- RESULTS-HPA-END -->
 
