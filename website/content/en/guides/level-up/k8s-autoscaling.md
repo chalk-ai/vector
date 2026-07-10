@@ -65,7 +65,7 @@ We used the following configuration for the tests:
    consumer pod  (socat -u, drains to /dev/null)
 ```
 
-## Why HTTP + L7 load balancing?
+### Why HTTP with L7 load balancing?
 
 A plain TCP connection has no request boundary: Once a client is connected to
 a pod, a Kubernetes ClusterIP Service (which load-balances at L4) cannot
