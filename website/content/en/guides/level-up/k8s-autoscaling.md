@@ -53,22 +53,38 @@ We used the following configuration for the tests:
 
 ## Architecture
 
-```text
-1 × lading pod  (100 parallel connections, 55 MiB/s)
-        │  HTTP POST → ingress-nginx ClusterIP :80
-        ▼
-   Nginx ingress controller  (L7 round-robin per request)
-        │
-        ▼ (1, 3, or 8 pods depending on phase)
-   Vector pod(s)  (1 vCPU / 2 GiB each)
-   ┌──────────────────────────────────────┐
-   │ source:    http_server :9000         │
-   │ transform: parse_regex! (apache_clf) │
-   │ sink:      socket TCP → consumer     │
-   └──────────────────────────────────────┘
-        │  TCP → consumer Service
-        ▼
-   consumer pod  (socat -u, drains to /dev/null)
+```goat
++-----------------------------------------------+
+|                  lading pod                   |
+|      (100 parallel connections, 55 MiB/s)     |
++----------------------+------------------------+
+                       |
+                       | HTTP POST
+                       v ingress-nginx ClusterIP :80
++-----------------------------------------------+
+|          NGINX Ingress Controller             |
+|        (L7 round-robin per request)           |
++----------------------+------------------------+             .------------------------------.
+                       |                                     |    Vector pod configuration    |
+                       | distributes requests                |                                |
+                       | across available pods               |      (1 vCPU / 2 GiB each)     |
+                       |                             ________+                                |
+         .-------------+---------------------.      /        | +---------------------------+  |
+        |              |                      |    |         | | source: http_server :9000 |  |
+        v              v                      v    |         | +-------------+-------------+  |
+    +--------+     +--------+     .-.     +--------|-+       |               |                |
+    | Vector |     | Vector |    | … |    | Vector   |       |               v                |
+    +---+----+     +---+----+     '-'     +---+------+       | +----------------------------. |
+        |              |                      |              | |  transform: parse_regex!() | |
+         '-------------+---+-----------------'               | | (Apache Common Log Format) | |
+                       |                                     | +-------------+--------------+ |
+                       |                                     |               |                |
+                       | TCP consumer service                |               v                |
+                       v                                     | +-------------+-------------+  |
+        +---------------------------------+                  | |     sink: socket (TCP)    |  |
+        |        consumer pod             |                  | +---------------------------+  |
+        | (socat -u, drains to /dev/null) |                   '------------------------------'
+        +---------------------------------+
 ```
 
 ### Why HTTP with L7 load balancing?
