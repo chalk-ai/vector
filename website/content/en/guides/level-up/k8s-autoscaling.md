@@ -295,25 +295,6 @@ to spin up to stay under CPU saturation while keeping some headroom. The
 saturation crossover is 55 / 16.64 ≈ **3.3 pods** at 100% CPU. At a 70%
 utilization target, the expected equilibrium is ⌈3.3 / 0.70⌉ = ⌈4.71⌉ = **5 pods**.
 
-The 70% is a *target* with headroom, not a hard ceiling: it keeps each pod short
-of saturation so a small traffic increase doesn't immediately trigger
-backpressure. The HPA doesn't hold CPU at exactly 70%, though — it treats the
-target as the center of a **±10% tolerance band (63–77%)** and only adds or
-removes pods when average CPU leaves that band. That band exists for two reasons.
-First, CPU readings are noisy, so reacting to every fluctuation around the target
-would cause constant flapping. Second, pods are whole numbers, so the target is
-almost never reachable exactly: the ideal here is `4.71` pods, which has to round
-to an integer that lands *off* 70% (five pods sit a little under, four well
-over). Without the band the HPA would keep trying to hit a target no integer pod
-count can reach.
-
-This is also why 5 is only the *theoretical* minimum. As
-[Reaching different results](#reaching-different-results) explains, two separate
-mechanisms make neighboring pod counts stable: the tolerance band holds the lower
-count (its CPU sits inside 63–77%), while the HPA's `⌈replicas × ratio⌉` rounding
-holds the higher count (its CPU is below the band, but the calculation rounds
-back to the same replica count). So a real run can settle at 5 or 6.
-
 We can now configure the HPA to find the minimum pod count that keeps CPU
 utilization around the 70% target.
 
