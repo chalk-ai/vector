@@ -346,7 +346,7 @@ flag's `0.1` default, and holds stable for three consecutive 15-second intervals
 
 All the calculations made and empirical evidence suggests that 5 is the correct
 number of pods for the HPA to find the equilibrium. However, running this a few
-times might get you different results.
+times might yield different results.
 
 | Time | Replicas | Avg CPU | Event |
 | ---- | -------- | ------- | ----- |
