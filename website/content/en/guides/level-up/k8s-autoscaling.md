@@ -33,7 +33,10 @@ parsing.
 When CPU saturation occurs, Vector applies **backpressure instead of dropping
 events**. Vector's `http_server` source keeps accepting connections but stalls
 on responses until it can process the backlog, so the NGINX Ingress
-Controller and the load generator experience stalled connections.
+Controller and the load generator experience stalled connections. This only
+avoids event loss as long as those stalled connections stay open. If the
+NGINX Ingress Controller or the load generator times out and closes one
+first, the in-flight request's events are lost along with it.
 
 ## Test environment
 
@@ -183,6 +186,11 @@ The following Ingress routes HTTP POST requests to the Vector Service at the req
 so every pod receives a share of traffic as soon as it's Ready, independent of how or why the replica count changes:
 
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/manifests/ingress.yaml" dir="true" >}}
+
+Note that `proxy-read-timeout` and `proxy-send-timeout` are left at their
+60s defaults. Under overload, a stalled connection that exceeds those
+timeouts is closed by NGINX before Vector finishes processing it, losing
+that request's events rather than just delaying them.
 
 The producer is [lading](https://github.com/DataDog/lading), configured to
 generate `apache_common` log lines at 55 MiB/s across 100 parallel connections:
