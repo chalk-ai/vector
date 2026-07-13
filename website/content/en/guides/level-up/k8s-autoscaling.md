@@ -376,7 +376,7 @@ This can lead to some very interesting results, just like the 6 pod stabilizatio
 even though the CPU load falls squarely out of bounds.
 
 ```text
-desired = ⌈ 6 × (60% / 70%) ⌉ = ⌈ 5.1428571429 ⌉ = 6
+desired = ⌈ 6 × (61% / 70%) ⌉ = ⌈ 5.2285714286 ⌉ = 6
 ```
 
 Given that past the saturation point the workload is no longer CPU-bound. So
