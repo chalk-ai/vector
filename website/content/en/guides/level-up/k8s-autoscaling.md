@@ -172,7 +172,8 @@ the consumer:
 {{< embed file="content/en/guides/level-up/k8s-autoscaling/values.yaml" dir="true" >}}
 
 ```bash
-helm upgrade --install vector vectordotdev/vector --namespace vector-perf --version 0.56.0 -f values.yaml --set replicas=1
+helm upgrade --install vector vectordotdev/vector --namespace vector-perf --version 0.56.0 \
+  -f values.yaml --set replicas=1 --wait --timeout=3m
 
 kubectl apply -f manifests/ingress.yaml
 kubectl apply -f manifests/producer.yaml
@@ -286,6 +287,25 @@ to spin up to stay under CPU saturation while keeping some headroom. The
 saturation crossover is 55 / 16.64 ≈ **3.3 pods** at 100% CPU. At a 70%
 utilization target, the expected equilibrium is ⌈3.3 / 0.70⌉ = ⌈4.71⌉ = **5 pods**.
 
+The 70% is a *target* with headroom, not a hard ceiling: it keeps each pod short
+of saturation so a small traffic increase doesn't immediately trigger
+backpressure. The HPA doesn't hold CPU at exactly 70%, though — it treats the
+target as the center of a **±10% tolerance band (63–77%)** and only adds or
+removes pods when average CPU leaves that band. That band exists for two reasons.
+First, CPU readings are noisy, so reacting to every fluctuation around the target
+would cause constant flapping. Second, pods are whole numbers, so the target is
+almost never reachable exactly: the ideal here is `4.71` pods, which has to round
+to an integer that lands *off* 70% (five pods sit a little under, four well
+over). Without the band the HPA would keep trying to hit a target no integer pod
+count can reach.
+
+This is also why 5 is only the *theoretical* minimum. As
+[Reaching different results](#reaching-different-results) explains, two separate
+mechanisms make neighboring pod counts stable: the tolerance band holds the lower
+count (its CPU sits inside 63–77%), while the HPA's `⌈replicas × ratio⌉` rounding
+holds the higher count (its CPU is below the band, but the calculation rounds
+back to the same replica count). So a real run can settle at 5 or 6.
+
 We can now configure the HPA to find the minimum pod count that keeps CPU
 utilization around the 70% target.
 
@@ -321,6 +341,82 @@ scale-up event to 71%, within the ±10% tolerance band (63–77%) set by the
 flag's `0.1` default, and holds stable for three consecutive 15-second intervals.
 
 <!-- RESULTS-HPA-END -->
+
+### Stabilizing at 6?
+
+All the calculations made and empirical evidence suggests that 5 is the correct
+number of pods for the HPA to find the equilibrium. However, running this a few
+times might get you different results.
+
+| Time | Replicas | Avg CPU | Event |
+| ---- | -------- | ------- | ----- |
+| t=0 s | **1** | 100% | load starts |
+| t=30 s | **2** | 100% | HPA scales 1→2 |
+| t=60 s | **3** | 98% | HPA scales 2→3 |
+| t=90 s | **5** | 99% | HPA scales 3→5 |
+| t=120 s | **7** | 71% | HPA scales 5→7 |
+| t=150 s | **7** | 52% |       —        |
+| t=180 s | **6** | 52% | HPA scales 7→6 |
+| t=300 s | **6** | **61%** | **Stable, equilibrium** |
+
+But... Why? We are using the 70% CPU threshold and didn't alter the autoscaler's
+default 10% tolerance band. 61% is clearly outside the 63-77% band. This only
+happened because the HPA overshot the pod count — and it's possible this occured
+due to a variety of reasons, with the likely explanation that some pods running slower than expected.
+However, according to the HPA algorithm both are valid resting points. After
+determining that the current CPU load falls outside the threshold, it then
+calculates the number of pods according to the following formula
+([source](https://github.com/kubernetes/kubernetes/blob/v1.36.2/pkg/controller/podautoscaler/replica_calculator.go#L117-L118)):
+
+```text
+desired = ⌈ currentReplicas × (currentAvgCPU / 70%) ⌉
+```
+
+This can lead to some very interesting results, just like the 6 pod stabilization,
+even though the CPU load falls squarely out of bounds.
+
+```text
+desired = ⌈ 6 × (60% / 70%) ⌉ = ⌈ 5.1428571429 ⌉ = 6
+```
+
+Given that past the saturation point the workload is no longer CPU-bound. So
+the *total* CPU demand is fixed and the HPA just spreads it across whatever pods
+exist. Slower pods change this number: a pod that parses 10% slower needs ~10% more CPU
+for the same 55 MiB/s, raising the total; faster pods lower it.
+
+Doing some calculations based on Phase 1's results, we can get the total
+workload demand based on each pod's capacity:
+
+```text
+total CPU demand = (55 / 16.64) × 100% = 330.5 pod-percent
+```
+
+Based on the calculated total CPU demand we can calculate theoretical
+stabilization pod counts. The table below sweeps the per-pod speed ±10% (and
+also 15% slower).
+
+(✅ = stable resting point):
+
+| Per-pod speed vs. benchmark | +10% faster | Benchmark | 10% slower | 15% slower |
+| --------------------------- | ----------- | --------- | ---------- | ---------- |
+| Per-pod throughput (MiB/s)  | 18.3        | 16.64     | 15.0       | 14.1       |
+| Total CPU demand            | 300%        | 330%      | 367%       | 389%       |
+| **4 pods**                  | 75% ✅      | 83%       | 92%        | 97%        |
+| **5 pods**                  | 60% ✅      | 66% ✅    | 73% ✅     | 78%        |
+| **6 pods**                  | 50%         | 55%       | 61% ✅     | 65% ✅     |
+| **7 pods**                  | 43%         | 47%       | 53%        | 56%        |
+
+We can see that these values are theoretical, since they're based on Phase 1's results.
+Even when we stabilized at the expected 5 pods the CPU utilization was around 70%
+instead of the projected 66%. Real world scenarios will likely fall somewhere
+in between the benchmark and the 10% slower band, which can lead to the results
+we observed.
+
+```text
+((71% - 66%) / 66%) × 100 = 7.57
+```
+
+In the original Phase 4 run we're about 7.57% slower than the predicted benchmark.
 
 ## Results summary
 

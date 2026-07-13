@@ -32,32 +32,37 @@ wait_rollout() {
   kube rollout status deployment/vector -n "$NAMESPACE" --timeout=120s >&2
 }
 
-# Wait until all Vector pods have had a stable restart count for 30 consecutive
-# seconds. This ensures pods have survived the initial load burst (which can
-# cause 1–3 OOM restarts before backpressure establishes) before we measure.
+# Wait until all Vector pods are Ready and have had a stable restart count for
+# 30 consecutive seconds. This ensures pods have survived the initial load
+# burst (which can cause 1–3 OOM restarts before backpressure establishes),
+# and aren't sitting in a CrashLoopBackOff window where the restart count
+# hasn't ticked yet, before we measure.
 wait_stable() {
   local max_wait=300 interval=5 stable_needed=6
   local elapsed=0 stable_count=0 last_restarts=""
 
   log "Waiting for Vector pods to stabilise under load..."
   while [[ "$elapsed" -lt "$max_wait" ]]; do
-    local restarts
+    local restarts all_ready
     restarts=$(kube get pods -n "$NAMESPACE" -l app.kubernetes.io/name=vector \
       -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
       2>/dev/null | paste -sd,)
+    all_ready=false
+    kube wait --for=condition=Ready pod -l app.kubernetes.io/name=vector \
+      -n "$NAMESPACE" --timeout=15s >/dev/null 2>&1 && all_ready=true
 
-    if [[ "$restarts" == "$last_restarts" && -n "$restarts" ]]; then
+    if [[ "$restarts" == "$last_restarts" && -n "$restarts" && "$all_ready" == true ]]; then
       stable_count=$(( stable_count + 1 ))
-      log "[${elapsed}s] restarts=${restarts} (stable ${stable_count}/${stable_needed})"
+      log "[${elapsed}s] restarts=${restarts} ready=${all_ready} (stable ${stable_count}/${stable_needed})"
       if [[ "$stable_count" -ge "$stable_needed" ]]; then
-        log "Pods stable (restart counts: ${restarts})."
+        log "Pods stable and ready (restart counts: ${restarts})."
         return 0
       fi
     else
       if [[ -n "$last_restarts" ]]; then
-        log "[${elapsed}s] restarts=${restarts} (changed from ${last_restarts}, reset)"
+        log "[${elapsed}s] restarts=${restarts} ready=${all_ready} (changed from ${last_restarts} or not ready, reset)"
       else
-        log "[${elapsed}s] restarts=${restarts}"
+        log "[${elapsed}s] restarts=${restarts} ready=${all_ready}"
       fi
       stable_count=0
       last_restarts="$restarts"
@@ -228,9 +233,13 @@ run_hpa_phase() {
   wait_stable
   kube autoscale deployment vector -n "$NAMESPACE" \
     --cpu-percent=70 --min=1 --max=8 >/dev/null 2>&1
+  # Shorten scale-down stabilization from the 300s default so an HPA
+  # overshoot doesn't stall the experiment for minutes before correcting.
+  kube patch hpa vector -n "$NAMESPACE" --type merge \
+    -p '{"spec":{"behavior":{"scaleDown":{"stabilizationWindowSeconds":60}}}}' >/dev/null 2>&1
 
   local start elapsed
-  local last_replicas=1 scale_events=0 stable_count=0 last_stable=0 cpu_stable_count=0
+  local last_replicas=1 scale_events=0 stable_count=0 last_stable=0
   local replicas="" cpu_avg=""
   local max_elapsed=900
   start=$(date +%s)
@@ -265,23 +274,18 @@ run_hpa_phase() {
       stable_count=1
     fi
 
-    if [[ -n "$cpu_avg" && "$cpu_avg" -ge 63 && "$cpu_avg" -le 77 ]]; then
-      cpu_stable_count=$(( cpu_stable_count + 1 ))
-    else
-      cpu_stable_count=0
-    fi
-
     # Fail fast if HPA is blocked at maxReplicas with persistently high CPU.
     if [[ -n "$replicas" && "$replicas" == "8" && -n "$cpu_avg" && "$cpu_avg" -gt 77 && "$stable_count" -ge 3 ]]; then
       log "ERROR: HPA at maxReplicas=8 with ${cpu_avg}% CPU > 77% — cannot scale further; the cluster may be undersized."
       exit 1
     fi
 
-    # Equilibrium: same replica count for 75 s AND CPU within the HPA
-    # tolerance band (63-77%) for that entire streak, not just the latest
-    # sample. The lower bound rules out an over-provisioned state (e.g. an
-    # HPA overshoot) being mistaken for equilibrium while replicas hold steady.
-    if [[ "$stable_count" -ge 5 && "$cpu_stable_count" -ge 5 && "$elapsed" -gt 120 ]]; then
+    # Equilibrium: same replica count held for 60+ seconds. The achieved CPU
+    # at a given replica count depends on discrete rounding in the HPA's
+    # ceil(replicas × utilization/target) formula, so it won't always land
+    # inside the nominal ±10% tolerance band — replica-count stability alone
+    # is what actually indicates the HPA has stopped scaling.
+    if [[ "$stable_count" -ge 5 && "$elapsed" -gt 120 ]]; then
       log "Equilibrium: $replicas pods, ${cpu_avg}% CPU, ${elapsed}s elapsed."
       break
     fi
