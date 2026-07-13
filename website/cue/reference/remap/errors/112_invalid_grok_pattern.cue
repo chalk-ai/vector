@@ -6,7 +6,7 @@ remap: errors: "112": {
 		A [grok](\(urls.grok)) pattern passed to `parse_grok` or `parse_groks` is invalid and cannot
 		be compiled.
 		"""
-	resolution: """
+	resolution:  """
 		Correct the grok pattern syntax. Refer to the [grok pattern documentation](\(urls.grok)) for
 		valid pattern syntax and available built-in patterns.
 		"""

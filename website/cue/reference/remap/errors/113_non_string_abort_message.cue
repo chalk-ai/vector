@@ -1,7 +1,7 @@
 package metadata
 
 remap: errors: "113": {
-	title:       "Non-string abort message"
+	title: "Non-string abort message"
 	description: """
 		The expression passed as an `abort` message does not resolve to a string.
 		"""
