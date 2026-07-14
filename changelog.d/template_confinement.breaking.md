@@ -5,12 +5,7 @@ declared in the template. Templates with no literal prefix (e.g.
 only exception: its `base_dir` config field can provide an explicit
 confinement root for `path` templates with no usable literal prefix.
 
-Affected sinks: `aws_s3`, `azure_blob`, `gcp_cloud_storage`, `webhdfs`,
-`file`, `elasticsearch`, `kafka`, `http`, `axiom`, `opentelemetry`,
-`splunk_hec_logs`, `splunk_hec_metrics`, `humio_logs`, `humio_metrics`,
-`loki`, `clickhouse`, `doris`, `redis`, `amqp`, `pulsar`, `mqtt`, `nats`,
-`greptimedb_logs`, `aws_cloudwatch_logs`, `gcp_stackdriver_logs`,
-`prometheus_remote_write`.
+Any sink that includes a templated config field can be affected.
 
 The `file` sink gains a `base_dir` config field to set the confinement root
 explicitly when the `path` template has no usable literal prefix.
