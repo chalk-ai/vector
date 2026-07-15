@@ -123,6 +123,14 @@ struct FakeIntakeResponse<P> {
     payloads: Vec<P>,
 }
 
+impl<P> Default for FakeIntakeResponse<P> {
+    fn default() -> Self {
+        Self {
+            payloads: Vec::new(),
+        }
+    }
+}
+
 type FakeIntakeResponseJson = FakeIntakeResponse<FakeIntakePayloadJson>;
 
 impl FakeIntakeResponseT for FakeIntakeResponseJson {
@@ -141,7 +149,7 @@ impl FakeIntakeResponseT for FakeIntakeResponseRaw {
 
 async fn get_fakeintake_payloads<R>(base: &str, endpoint: &str) -> R
 where
-    R: FakeIntakeResponseT + DeserializeOwned,
+    R: FakeIntakeResponseT + DeserializeOwned + Default,
 {
     let url = &R::build_url(base, endpoint);
 
@@ -168,5 +176,13 @@ where
         }
     }
 
-    panic!("{last_error} after {MAX_FETCH_ATTEMPTS} attempts");
+    // Don't panic here: fakeintake may just be slow to start (no healthcheck
+    // gates the compose services), and the outer data-arrival polling loop
+    // (`poll_until`/`poll_until_stable`) has its own, longer retry budget.
+    // Returning empty payloads lets that loop keep retrying instead of the
+    // whole test aborting after this function's fixed attempt count.
+    warn!(
+        "{last_error} after {MAX_FETCH_ATTEMPTS} attempts, yielding empty payloads to outer retry loop"
+    );
+    R::default()
 }
