@@ -2,7 +2,7 @@ pub mod assertions;
 pub mod generators;
 pub mod listeners;
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use hyper::Method;
 
@@ -152,11 +152,83 @@ impl PipelineTest {
     }
 }
 
+/// Validate that every `Socket` generator targets a `socket` (TCP) source that uses
+/// `decoding.codec: json`. Generators always send newline-delimited JSON; without
+/// `codec: json` on the source the JSON is stored verbatim in `.message` and downstream
+/// VRL transforms that access structured fields will receive `null`.
+///
+/// Matches sources to generators by port number to tolerate `0.0.0.0` vs `127.0.0.1`
+/// differences between source and generator addresses.
+fn validate_socket_codecs(
+    test_name: &str,
+    test_def: &TestDefinition<String>,
+    config_builder: &crate::config::ConfigBuilder,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for (gen_name, gen_config) in &test_def.generators {
+        let gen_addr: &SocketAddr = match gen_config {
+            TestGeneratorConfig::Socket { address, .. } => address,
+            TestGeneratorConfig::Http { .. } => continue,
+        };
+
+        // Search for a socket TCP source whose bound port matches the generator's target port.
+        for (_component_key, source_outer) in &config_builder.sources {
+            let Ok(source_json) = serde_json::to_value(&source_outer.inner) else {
+                continue;
+            };
+
+            // Only inspect socket sources in TCP mode.
+            if source_json.get("type").and_then(|v| v.as_str()) != Some("socket") {
+                continue;
+            }
+            if source_json.get("mode").and_then(|v| v.as_str()) != Some("tcp") {
+                continue;
+            }
+
+            // Match by port (tolerates address family mismatches like 0.0.0.0 vs 127.0.0.1).
+            let source_addr_str = source_json
+                .get("address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let source_port: u16 = source_addr_str
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(0);
+            if source_port != gen_addr.port() {
+                continue;
+            }
+
+            // Found the source — check its codec.
+            let codec = source_json
+                .pointer("/decoding/codec")
+                .and_then(|v| v.as_str())
+                .unwrap_or("bytes");
+            if codec != "json" {
+                errors.push(format!(
+                    "test '{test_name}' generator '{gen_name}': socket source at \
+                     {source_addr_str} uses codec '{codec}', but generators always send \
+                     newline-delimited JSON. Add `decoding: {{codec: json}}` to the source.",
+                ));
+            }
+        }
+    }
+
+    errors
+}
+
 /// Build a single `PipelineTest` from a test definition and the topology config builder.
 fn build_one_pipeline_test(
     test_def: TestDefinition<String>,
     config_builder: ConfigBuilder,
 ) -> Result<PipelineTest, Vec<String>> {
+    // Validate config before building anything expensive.
+    let codec_errors = validate_socket_codecs(&test_def.name, &test_def, &config_builder);
+    if !codec_errors.is_empty() {
+        return Err(codec_errors);
+    }
+
     // Build generators.
     let mut generators: Vec<Box<dyn TestGenerator>> = Vec::new();
     for (name, gen_config) in &test_def.generators {
@@ -252,6 +324,52 @@ pub async fn build_pipeline_tests(
     // Extract test definitions before building the config, to avoid resolve_outputs running on
     // pipeline test outputs (which refer to listener names, not graph component names).
     let test_definitions = std::mem::take(&mut config_builder.tests);
+
+    // Check for port collisions across all test definitions before building any topology.
+    // Tests within the same run may overlap in TIME_WAIT if a previous run was interrupted,
+    // and some test runners may execute tests concurrently in the future.
+    {
+        let mut port_owners: HashMap<u16, String> = HashMap::new();
+        let mut port_errors: Vec<String> = Vec::new();
+
+        for test_def in &test_definitions {
+            let mut check_port = |port: u16, owner: String| {
+                if let Some(prior) = port_owners.get(&port) {
+                    port_errors.push(format!(
+                        "port {port} is used by both {prior} and {owner}"
+                    ));
+                } else {
+                    port_owners.insert(port, owner);
+                }
+            };
+
+            for (gen_name, gen_config) in &test_def.generators {
+                let addr = match gen_config {
+                    TestGeneratorConfig::Socket { address, .. }
+                    | TestGeneratorConfig::Http { address, .. } => address,
+                };
+                check_port(
+                    addr.port(),
+                    format!("test '{}' generator '{gen_name}'", test_def.name),
+                );
+            }
+
+            for (listener_name, listener_config) in &test_def.listeners {
+                let addr = match listener_config {
+                    TestListenerConfig::Http { address, .. }
+                    | TestListenerConfig::Tcp { address } => address,
+                };
+                check_port(
+                    addr.port(),
+                    format!("test '{}' listener '{listener_name}'", test_def.name),
+                );
+            }
+        }
+
+        if !port_errors.is_empty() {
+            return Err(port_errors);
+        }
+    }
 
     let mut tests: Vec<Box<dyn RunnableTest>> = Vec::new();
     let mut build_errors: Vec<String> = Vec::new();
