@@ -203,11 +203,9 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
         MAX_RETRIES,
         WAIT_INTERVAL,
         || async {
-            let payloads = get_fakeintake_payloads::<FakeIntakeResponseJson>(
-                &address,
-                SERIES_ENDPOINT_V1,
-            )
-            .await;
+            let payloads =
+                get_fakeintake_payloads::<FakeIntakeResponseJson>(&address, SERIES_ENDPOINT_V1)
+                    .await;
 
             info!("unpacking payloads");
             let payloads = unpack_v1_series(&payloads.payloads);
@@ -238,11 +236,9 @@ async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
         MAX_RETRIES,
         WAIT_INTERVAL,
         || async {
-            let payloads = get_fakeintake_payloads::<FakeIntakeResponseRaw>(
-                &address,
-                SERIES_ENDPOINT_V2,
-            )
-            .await;
+            let payloads =
+                get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SERIES_ENDPOINT_V2)
+                    .await;
 
             info!("unpacking payloads");
             let payloads = unpack_proto_payloads::<MetricPayload>(&payloads)

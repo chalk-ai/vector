@@ -115,8 +115,7 @@ async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
         WAIT_INTERVAL,
         || async {
             let payloads =
-                get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT)
-                    .await;
+                get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT).await;
 
             info!("unpacking payloads");
             let payloads: Vec<SketchPayload> = unpack_proto_payloads(&payloads)
