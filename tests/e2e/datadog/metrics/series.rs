@@ -202,6 +202,7 @@ async fn get_v1_series_from_pipeline(address: String) -> SeriesIntake {
     let intake = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
+        STABLE_WAIT_INTERVAL,
         || async {
             let payloads =
                 get_fakeintake_payloads::<FakeIntakeResponseJson>(&address, SERIES_ENDPOINT_V1)
@@ -235,6 +236,7 @@ async fn get_v2_series_from_pipeline(address: String) -> SeriesIntake {
     let intake = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
+        STABLE_WAIT_INTERVAL,
         || async {
             let payloads =
                 get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SERIES_ENDPOINT_V2)

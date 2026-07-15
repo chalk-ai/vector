@@ -21,6 +21,15 @@ const FETCH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 // varies per test, so `max_retries` is left to the caller.
 const WAIT_INTERVAL: Duration = Duration::from_secs(1);
 
+// Wait used by `poll_until_stable` once `is_complete` first reports true,
+// before re-fetching to confirm the data has actually stopped changing.
+// The Agent's default aggregator flush interval is ~15s (see
+// tests/e2e/datadog/metrics/mod.rs), so a gap as short as `WAIT_INTERVAL`
+// can find two consecutive fetches equal simply because no new flush has
+// landed yet, not because all data has arrived. This needs to span at
+// least one flush interval, with margin, to actually detect that.
+pub(super) const STABLE_WAIT_INTERVAL: Duration = Duration::from_secs(20);
+
 // Calls `fetch` up to `max_retries` times, sleeping `wait` between attempts,
 // until `is_complete` reports the fetched value is ready to use.
 pub(super) async fn poll_until<T, F, Fut, P>(
@@ -57,6 +66,7 @@ where
 pub(super) async fn poll_until_stable<T, F, Fut, P>(
     max_retries: usize,
     wait: Duration,
+    stable_wait: Duration,
     mut fetch: F,
     mut is_complete: P,
 ) -> T
@@ -72,7 +82,7 @@ where
     let mut attempt = 1;
     while attempt < max_retries {
         if is_complete(&value) {
-            tokio::time::sleep(wait).await;
+            tokio::time::sleep(stable_wait).await;
             attempt += 1;
             let next = fetch().await;
             if next == value {

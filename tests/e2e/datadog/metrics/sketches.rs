@@ -113,6 +113,7 @@ async fn get_sketches_from_pipeline(address: String) -> SketchIntake {
     let sketches = poll_until_stable(
         MAX_RETRIES,
         WAIT_INTERVAL,
+        STABLE_WAIT_INTERVAL,
         || async {
             let payloads =
                 get_fakeintake_payloads::<FakeIntakeResponseRaw>(&address, SKETCHES_ENDPOINT).await;
