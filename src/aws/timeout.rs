@@ -47,6 +47,21 @@ pub struct AwsTimeout {
 }
 
 impl AwsTimeout {
+    /// Creates a new timeout configuration from the given connect, operation, and read
+    /// timeouts, each expressed in seconds. A `None` leaves that dimension unbounded (subject
+    /// to the AWS SDK defaults).
+    pub const fn new(
+        connect_timeout: Option<u64>,
+        operation_timeout: Option<u64>,
+        read_timeout: Option<u64>,
+    ) -> Self {
+        Self {
+            connect_timeout,
+            operation_timeout,
+            read_timeout,
+        }
+    }
+
     /// returns the connection timeout
     pub const fn connect_timeout(&self) -> Option<u64> {
         self.connect_timeout
