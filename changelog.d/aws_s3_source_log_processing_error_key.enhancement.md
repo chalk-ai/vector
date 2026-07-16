@@ -1,1 +1,0 @@
-The `aws_s3` source now logs an error containing the S3 object key whenever it fails to process an S3 event (e.g. a `GetObject` failure, a decode error, or a downstream acknowledgement error), making it easier to identify which object failed without cross-referencing SQS message IDs.
