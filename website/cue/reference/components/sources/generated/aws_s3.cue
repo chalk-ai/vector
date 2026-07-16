@@ -1005,6 +1005,63 @@ generated: components: sources: aws_s3: configuration: {
 			}
 		}
 	}
+	timeout: {
+		description: """
+			Client timeout configuration for S3 operations.
+
+			These settings bound the S3 `GetObject` request and the read of its response body. Any
+			dimension left unset falls back to a safe default (`connect_timeout_seconds = 5`,
+			`read_timeout_seconds = 30`) so that a half-open or silently dropped connection — for
+			example one reaped by a NAT gateway idle timeout — cannot hang a polling task
+			indefinitely and stall S3 ingestion. `read_timeout_seconds` applies per-read rather than
+			to the whole request, so a slow but steadily progressing transfer of a large object is
+			not cut off.
+			"""
+		required: false
+		type: object: options: {
+			connect_timeout_seconds: {
+				description: """
+					The connection timeout for AWS requests
+
+					Limits the amount of time allowed to initiate a socket connection.
+					"""
+				required: false
+				type: uint: {
+					examples: [20]
+					unit: "seconds"
+				}
+			}
+			operation_timeout_seconds: {
+				description: """
+					The operation timeout for AWS requests
+
+					Limits the amount of time allowed for an operation to be fully serviced; an
+					operation represents the full request/response lifecycle of a call to a service.
+					Take care when configuring this settings to allow enough time for the polling
+					interval configured in `poll_secs`
+					"""
+				required: false
+				type: uint: {
+					examples: [20]
+					unit: "seconds"
+				}
+			}
+			read_timeout_seconds: {
+				description: """
+					The read timeout for AWS requests
+
+					Limits the amount of time allowed to read the first byte of a response from the
+					time the request is initiated. Take care when configuring this settings to allow
+					enough time for the polling interval configured in `poll_secs`
+					"""
+				required: false
+				type: uint: {
+					examples: [20]
+					unit: "seconds"
+				}
+			}
+		}
+	}
 	tls_options: {
 		description: "TLS configuration."
 		required:    false
