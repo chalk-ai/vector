@@ -273,6 +273,23 @@ pub enum ProcessingError {
     },
 }
 
+impl ProcessingError {
+    /// Returns the S3 object key associated with this error, if the failure occurred after the
+    /// S3 event record (and thus its key) was known.
+    fn key(&self) -> Option<&str> {
+        match self {
+            ProcessingError::GetObject { key, .. }
+            | ProcessingError::ReadObject { key, .. }
+            | ProcessingError::PipelineSend { key, .. }
+            | ProcessingError::WrongRegion { key, .. }
+            | ProcessingError::ErrorAcknowledgement { key, .. }
+            | ProcessingError::FileTooOld { key, .. } => Some(key),
+            ProcessingError::InvalidSqsMessage { .. }
+            | ProcessingError::UnsupportedS3EventVersion { .. } => None,
+        }
+    }
+}
+
 pub struct State {
     region: Region,
 
@@ -524,6 +541,11 @@ impl IngestorProcess {
                             }
                         }
                         _ => {
+                            error!(
+                                message = "Failed to process S3 event.",
+                                key = err.key().unwrap_or("<unknown>"),
+                                error = %err,
+                            );
                             emit!(SqsMessageProcessingError {
                                 message_id: &message_id,
                                 error: &err,
