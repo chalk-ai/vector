@@ -277,6 +277,9 @@ struct ProxyAuthorities {
 
 impl ProxyAuthorities {
     fn matches(&self, uri: &http::Uri) -> bool {
+        if self.http.is_none() && self.https.is_none() {
+            return false;
+        }
         let target = (uri.host(), uri.port_u16());
         let matches_one = |authority: &Option<(String, Option<u16>)>| {
             authority
