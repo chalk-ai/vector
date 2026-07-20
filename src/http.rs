@@ -214,15 +214,16 @@ pub fn build_proxy_connector(
 ) -> Result<ProxyConnector<HttpsConnector<HttpConnector>>, HttpError> {
     // The inner connector dials the proxy for proxied requests and the destination directly for
     // `no_proxy` requests. The `server_name` override must apply only to the destination, so
-    // collect the proxy hosts to exclude from it; otherwise an HTTPS proxy's own certificate would
-    // be verified against the destination name and fail with a hostname mismatch.
-    let proxy_hosts = if proxy_config.enabled {
-        ProxyHosts {
-            http: proxy_host(proxy_config.http.as_deref()),
-            https: proxy_host(proxy_config.https.as_deref()),
+    // collect the authorities of proxies reached over TLS to exclude from it; otherwise an HTTPS
+    // proxy's own certificate would be verified against the destination name and fail with a
+    // hostname mismatch.
+    let proxy_authorities = if proxy_config.enabled {
+        ProxyAuthorities {
+            http: tls_proxy_authority(proxy_config.http.as_deref()),
+            https: tls_proxy_authority(proxy_config.https.as_deref()),
         }
     } else {
-        ProxyHosts::default()
+        ProxyAuthorities::default()
     };
 
     // `server_name` still cannot be applied to the tunneled destination TLS of a proxied HTTPS
@@ -245,7 +246,7 @@ pub fn build_proxy_connector(
     let tls = tls_connector_builder(&tls_settings)
         .context(BuildTlsConnectorSnafu)?
         .build();
-    let https = build_https_connector(tls_settings, proxy_hosts)?;
+    let https = build_https_connector(tls_settings, proxy_authorities)?;
     let mut proxy = ProxyConnector::new(https).unwrap();
     // Make proxy connector aware of user TLS settings by setting the TLS connector:
     // https://github.com/vectordotdev/vector/issues/13683
@@ -259,35 +260,49 @@ pub fn build_proxy_connector(
 pub fn build_tls_connector(
     tls_settings: MaybeTlsSettings,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
-    build_https_connector(tls_settings, ProxyHosts::default())
+    build_https_connector(tls_settings, ProxyAuthorities::default())
 }
 
-/// Hosts of the configured forward proxies. Used to exclude proxy connections from the
-/// `tls.server_name` override so that a proxy's own certificate is verified against the proxy host.
+/// Authorities (host and optional port) of the configured forward proxies that are reached over TLS
+/// (i.e. `https://` proxy URLs). Used to skip the `tls.server_name` override for the connection to
+/// such a proxy, so its own certificate is verified against the proxy authority rather than the
+/// destination name. Plaintext (`http://`) proxies never trigger a TLS handshake to the proxy, so
+/// they are not tracked; matching on the full authority also avoids mistaking a direct connection
+/// to a destination that merely shares a host with a proxy (e.g. on a different port).
 #[derive(Clone, Default)]
-struct ProxyHosts {
-    http: Option<String>,
-    https: Option<String>,
+struct ProxyAuthorities {
+    http: Option<(String, Option<u16>)>,
+    https: Option<(String, Option<u16>)>,
 }
 
-impl ProxyHosts {
-    fn matches(&self, host: &str) -> bool {
-        self.http.as_deref() == Some(host) || self.https.as_deref() == Some(host)
+impl ProxyAuthorities {
+    fn matches(&self, uri: &http::Uri) -> bool {
+        let target = (uri.host(), uri.port_u16());
+        let matches_one = |authority: &Option<(String, Option<u16>)>| {
+            authority
+                .as_ref()
+                .is_some_and(|(host, port)| target.0 == Some(host.as_str()) && target.1 == *port)
+        };
+        matches_one(&self.http) || matches_one(&self.https)
     }
 }
 
-/// Extract the host from a proxy URL, if present.
-fn proxy_host(url: Option<&str>) -> Option<String> {
-    url.and_then(|url| url.parse::<http::Uri>().ok())
-        .and_then(|uri| uri.host().map(str::to_owned))
+/// Extract the authority (host and optional port) of a proxy URL, but only when it is reached over
+/// TLS (an `https://` URL). Returns `None` for plaintext proxies or unparseable URLs.
+fn tls_proxy_authority(url: Option<&str>) -> Option<(String, Option<u16>)> {
+    let uri = url?.parse::<http::Uri>().ok()?;
+    if uri.scheme_str() != Some("https") {
+        return None;
+    }
+    Some((uri.host()?.to_owned(), uri.port_u16()))
 }
 
-/// Build an HTTPS connector, skipping the `tls.server_name` override for connections whose target
-/// host is one of `proxy_hosts`. The override must only apply to the upstream destination; applying
-/// it to a proxy connection would verify the proxy certificate against the destination name.
+/// Build an HTTPS connector, skipping the `tls.server_name` override for connections to one of
+/// `proxy_authorities`. The override must only apply to the upstream destination; applying it to a
+/// proxy connection would verify the proxy certificate against the destination name.
 fn build_https_connector(
     tls_settings: MaybeTlsSettings,
-    proxy_hosts: ProxyHosts,
+    proxy_authorities: ProxyAuthorities,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -298,7 +313,7 @@ fn build_https_connector(
     let settings = tls_settings.tls().cloned();
     https.set_callback(move |c, uri| {
         if let Some(settings) = &settings {
-            let skip_server_name = uri.host().is_some_and(|host| proxy_hosts.matches(host));
+            let skip_server_name = proxy_authorities.matches(uri);
             settings.apply_connect_configuration(c, skip_server_name)
         } else {
             Ok(())
@@ -805,6 +820,39 @@ mod tests {
 
     use super::*;
     use crate::test_util::addr::next_addr;
+
+    #[test]
+    fn tls_proxy_authority_only_tracks_https_proxies() {
+        assert_eq!(
+            tls_proxy_authority(Some("https://proxy.example:3128")),
+            Some(("proxy.example".to_owned(), Some(3128)))
+        );
+        assert_eq!(
+            tls_proxy_authority(Some("https://proxy.example")),
+            Some(("proxy.example".to_owned(), None))
+        );
+        // Plaintext proxies never trigger a TLS handshake to the proxy.
+        assert_eq!(tls_proxy_authority(Some("http://proxy.example:3128")), None);
+        assert_eq!(tls_proxy_authority(None), None);
+    }
+
+    #[test]
+    fn proxy_authorities_match_full_authority() {
+        let authorities = ProxyAuthorities {
+            http: None,
+            https: tls_proxy_authority(Some("https://proxy.example:3128")),
+        };
+        let uri = |s: &str| s.parse::<http::Uri>().unwrap();
+
+        // The proxy connection itself matches and skips the override.
+        assert!(authorities.matches(&uri("https://proxy.example:3128")));
+
+        // A direct destination sharing the host but on a different port must not match, so the
+        // `server_name` override still applies.
+        assert!(!authorities.matches(&uri("https://proxy.example:8443")));
+        // A different host does not match either.
+        assert!(!authorities.matches(&uri("https://destination.example:3128")));
+    }
 
     #[test]
     fn test_default_request_headers_defaults() {
