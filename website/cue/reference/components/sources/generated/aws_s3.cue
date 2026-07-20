@@ -787,6 +787,7 @@ generated: components: sources: aws_s3: configuration: {
 					"""
 				required: false
 				type: uint: {
+					default: 5
 					examples: [20]
 					unit: "seconds"
 				}
@@ -890,6 +891,7 @@ generated: components: sources: aws_s3: configuration: {
 					"""
 				required: false
 				type: uint: {
+					default: 30
 					examples: [20]
 					unit: "seconds"
 				}
@@ -1027,6 +1029,7 @@ generated: components: sources: aws_s3: configuration: {
 					"""
 				required: false
 				type: uint: {
+					default: 5
 					examples: [20]
 					unit: "seconds"
 				}
@@ -1056,6 +1059,7 @@ generated: components: sources: aws_s3: configuration: {
 					"""
 				required: false
 				type: uint: {
+					default: 30
 					examples: [20]
 					unit: "seconds"
 				}

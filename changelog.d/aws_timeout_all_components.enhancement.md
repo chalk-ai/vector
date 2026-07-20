@@ -1,0 +1,3 @@
+The `connect_timeout_seconds`, `operation_timeout_seconds`, and `read_timeout_seconds` client timeout options, previously only available on the `aws_s3` source, are now exposed on all other AWS-backed components: the `aws_cloudwatch_logs`, `aws_cloudwatch_metrics`, `aws_kinesis_firehose`, `aws_kinesis_streams`, `aws_s3`, `aws_sns`, and `aws_sqs` sinks, the `aws_sqs` source, and the `aws_secrets_manager` secrets backend (as `client_timeout`, to avoid colliding with the unrelated `timeout` option on the `exec` secrets backend). As before, `connect_timeout_seconds` and `read_timeout_seconds` default to `5` and `30` respectively when left unset, so a half-open or silently dropped connection cannot hang these clients indefinitely.
+
+authors: petere-datadog

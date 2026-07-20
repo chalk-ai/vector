@@ -131,7 +131,7 @@ pub struct AwsS3Config {
     /// not cut off.
     #[configurable(derived)]
     #[serde(default)]
-    timeout: Option<AwsTimeout>,
+    timeout: AwsTimeout,
 
     /// The namespace to use for logs. This overrides the global setting.
     #[configurable(metadata(docs::hidden))]
@@ -165,33 +165,6 @@ const fn default_framing() -> FramingConfig {
 
 const fn default_true() -> bool {
     true
-}
-
-/// Default connect timeout for the S3 client, in seconds.
-const DEFAULT_S3_CONNECT_TIMEOUT_SECONDS: u64 = 5;
-
-/// Default read (per-read inactivity) timeout for the S3 client, in seconds.
-///
-/// This bounds the response-body read of `GetObject` so a stalled or silently dropped
-/// connection cannot hang a polling task indefinitely. It is applied per-read, so a slow but
-/// steadily progressing transfer of a large object is not cut off. No operation timeout is set
-/// by default, to avoid capping legitimately long large-object transfers.
-const DEFAULT_S3_READ_TIMEOUT_SECONDS: u64 = 30;
-
-/// Resolves the effective S3 client timeout, applying default bounds to any dimension the
-/// configuration leaves unset. Connect and read timeouts default to bounded values; the
-/// operation timeout is left unset so large-object transfers are not capped.
-fn resolve_s3_timeout(configured: Option<AwsTimeout>) -> AwsTimeout {
-    let configured = configured.unwrap_or_default();
-    AwsTimeout::new(
-        configured
-            .connect_timeout()
-            .or(Some(DEFAULT_S3_CONNECT_TIMEOUT_SECONDS)),
-        configured.operation_timeout(),
-        configured
-            .read_timeout()
-            .or(Some(DEFAULT_S3_READ_TIMEOUT_SECONDS)),
-    )
 }
 
 impl_generate_config_from_default!(AwsS3Config);
@@ -286,7 +259,6 @@ impl AwsS3Config {
         let region = self.region.region();
         let endpoint = self.region.endpoint();
 
-        let s3_timeout = resolve_s3_timeout(self.timeout);
         let s3_client = create_client::<S3ClientBuilder>(
             &S3ClientBuilder {
                 force_path_style: Some(self.force_path_style),
@@ -296,7 +268,7 @@ impl AwsS3Config {
             endpoint.clone(),
             proxy,
             self.tls_options.as_ref(),
-            Some(&s3_timeout),
+            &self.timeout,
         )
         .await?;
 
@@ -313,7 +285,7 @@ impl AwsS3Config {
                     endpoint,
                     proxy,
                     sqs.tls_options.as_ref(),
-                    sqs.timeout.as_ref(),
+                    &sqs.timeout,
                 )
                 .await?;
 
@@ -1082,7 +1054,7 @@ mod integration_tests {
             region_endpoint.endpoint(),
             &proxy_config,
             None,
-            None,
+            &AwsTimeout::default(),
         )
         .await
         .unwrap()
@@ -1102,7 +1074,7 @@ mod integration_tests {
             region_endpoint.endpoint(),
             &proxy_config,
             None,
-            None,
+            &AwsTimeout::default(),
         )
         .await
         .unwrap()

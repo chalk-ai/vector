@@ -172,7 +172,7 @@ pub async fn create_client<T>(
     endpoint: Option<String>,
     proxy: &ProxyConfig,
     tls_options: Option<&TlsConfig>,
-    timeout: Option<&AwsTimeout>,
+    timeout: &AwsTimeout,
 ) -> crate::Result<T::Client>
 where
     T: ClientBuilder,
@@ -190,7 +190,7 @@ pub async fn create_client_and_region<T>(
     endpoint: Option<String>,
     proxy: &ProxyConfig,
     tls_options: Option<&TlsConfig>,
-    timeout: Option<&AwsTimeout>,
+    timeout: &AwsTimeout,
 ) -> crate::Result<(T::Client, Region)>
 where
     T: ClientBuilder,
@@ -238,20 +238,18 @@ where
         config_builder = config_builder.use_fips(use_fips);
     }
 
-    if let Some(timeout) = timeout {
-        let mut timeout_config_builder = TimeoutConfig::builder();
+    let mut timeout_config_builder = TimeoutConfig::builder();
 
-        let operation_timeout = timeout.operation_timeout();
-        let connect_timeout = timeout.connect_timeout();
-        let read_timeout = timeout.read_timeout();
+    let operation_timeout = timeout.operation_timeout();
+    let connect_timeout = timeout.connect_timeout();
+    let read_timeout = timeout.read_timeout();
 
-        timeout_config_builder
-            .set_operation_timeout(operation_timeout.map(Duration::from_secs))
-            .set_connect_timeout(connect_timeout.map(Duration::from_secs))
-            .set_read_timeout(read_timeout.map(Duration::from_secs));
+    timeout_config_builder
+        .set_operation_timeout(operation_timeout.map(Duration::from_secs))
+        .set_connect_timeout(Some(Duration::from_secs(connect_timeout)))
+        .set_read_timeout(Some(Duration::from_secs(read_timeout)));
 
-        config_builder = config_builder.timeout_config(timeout_config_builder.build());
-    }
+    config_builder = config_builder.timeout_config(timeout_config_builder.build());
 
     let config = config_builder.build();
 
