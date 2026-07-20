@@ -216,15 +216,13 @@ pub fn build_proxy_connector(
     // `no_proxy` requests. The `server_name` override must apply only to the destination, so
     // collect the proxy hosts to exclude from it; otherwise an HTTPS proxy's own certificate would
     // be verified against the destination name and fail with a hostname mismatch.
-    let proxy_hosts: Vec<String> = if proxy_config.enabled {
-        [proxy_config.http.as_deref(), proxy_config.https.as_deref()]
-            .into_iter()
-            .flatten()
-            .filter_map(|url| url.parse::<http::Uri>().ok())
-            .filter_map(|uri| uri.host().map(str::to_owned))
-            .collect()
+    let proxy_hosts = if proxy_config.enabled {
+        ProxyHosts {
+            http: proxy_host(proxy_config.http.as_deref()),
+            https: proxy_host(proxy_config.https.as_deref()),
+        }
     } else {
-        Vec::new()
+        ProxyHosts::default()
     };
 
     // `server_name` still cannot be applied to the tunneled destination TLS of a proxied HTTPS
@@ -261,15 +259,35 @@ pub fn build_proxy_connector(
 pub fn build_tls_connector(
     tls_settings: MaybeTlsSettings,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
-    build_https_connector(tls_settings, Vec::new())
+    build_https_connector(tls_settings, ProxyHosts::default())
+}
+
+/// Hosts of the configured forward proxies. Used to exclude proxy connections from the
+/// `tls.server_name` override so that a proxy's own certificate is verified against the proxy host.
+#[derive(Clone, Default)]
+struct ProxyHosts {
+    http: Option<String>,
+    https: Option<String>,
+}
+
+impl ProxyHosts {
+    fn matches(&self, host: &str) -> bool {
+        self.http.as_deref() == Some(host) || self.https.as_deref() == Some(host)
+    }
+}
+
+/// Extract the host from a proxy URL, if present.
+fn proxy_host(url: Option<&str>) -> Option<String> {
+    url.and_then(|url| url.parse::<http::Uri>().ok())
+        .and_then(|uri| uri.host().map(str::to_owned))
 }
 
 /// Build an HTTPS connector, skipping the `tls.server_name` override for connections whose target
-/// host is in `proxy_hosts`. The override must only apply to the upstream destination; applying it
-/// to a proxy connection would verify the proxy certificate against the destination name.
+/// host is one of `proxy_hosts`. The override must only apply to the upstream destination; applying
+/// it to a proxy connection would verify the proxy certificate against the destination name.
 fn build_https_connector(
     tls_settings: MaybeTlsSettings,
-    proxy_hosts: Vec<String>,
+    proxy_hosts: ProxyHosts,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -280,9 +298,7 @@ fn build_https_connector(
     let settings = tls_settings.tls().cloned();
     https.set_callback(move |c, uri| {
         if let Some(settings) = &settings {
-            let skip_server_name = uri
-                .host()
-                .is_some_and(|host| proxy_hosts.iter().any(|proxy| proxy == host));
+            let skip_server_name = uri.host().is_some_and(|host| proxy_hosts.matches(host));
             settings.apply_connect_configuration(c, skip_server_name)
         } else {
             Ok(())
