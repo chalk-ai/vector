@@ -286,9 +286,6 @@ impl AwsS3Config {
         let region = self.region.region();
         let endpoint = self.region.endpoint();
 
-        // Bound the S3 client's requests. Historically this was `None`, which left the
-        // response-body read of `GetObject` unbounded, so a half-open or silently dropped
-        // connection could hang a polling task indefinitely and stall SQS-based ingestion.
         let s3_timeout = resolve_s3_timeout(self.timeout);
         let s3_client = create_client::<S3ClientBuilder>(
             &S3ClientBuilder {
