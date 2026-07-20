@@ -122,12 +122,14 @@ impl SinkConfig for MqttSinkConfig {
             .confine(&self.confinement, Self::NAME, "topic")?;
         let connector = config.build_connector()?;
         let sink = MqttSink::new(&config, connector.clone())?;
-
-        self.confinement.set_confinement_gauge("sink", Self::NAME);
         Ok((
             VectorSink::from_event_streamsink(sink),
             Box::pin(async move { connector.healthcheck().await }),
         ))
+    }
+
+    fn confinement_config(&self) -> Option<&crate::template::ConfinementConfig> {
+        Some(&self.confinement)
     }
 
     fn input(&self) -> Input {
