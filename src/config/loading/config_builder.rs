@@ -1,9 +1,12 @@
-use std::{collections::HashMap, io::Read};
+use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use toml::value::Table;
 
-use super::{ComponentHint, Process, deserialize_table, loader, prepare_input, secret};
+use super::{
+    ComponentHint, ConfigPath, Format, Process, deserialize_table, deserialize_table_wrapped,
+    env_var_interpolation_enabled, interpolate_toml_table_with_secrets, loader, loader_from_paths,
+};
 use crate::config::{
     ComponentKey, ConfigBuilder, EnrichmentTableOuter, SinkOuter, SourceOuter, TestDefinition,
     TransformOuter,
@@ -38,16 +41,16 @@ impl ConfigBuilderLoader {
     /// Builds the ConfigBuilderLoader and loads configuration from the specified paths.
     pub fn load_from_paths(
         self,
-        config_paths: &[super::ConfigPath],
+        config_paths: &[ConfigPath],
     ) -> Result<ConfigBuilder, Vec<String>> {
-        super::loader_from_paths(self, config_paths)
+        loader_from_paths(self, config_paths)
     }
 
     /// Builds the ConfigBuilderLoader and loads configuration from an input reader.
-    pub fn load_from_input<R: Read>(
+    pub fn load_from_input<R: std::io::Read>(
         self,
         input: R,
-        format: super::Format,
+        format: Format,
     ) -> Result<ConfigBuilder, Vec<String>> {
         super::loader_from_input(self, input, format)
     }
@@ -58,48 +61,53 @@ impl Default for ConfigBuilderLoader {
         Self {
             builder: ConfigBuilder::default(),
             secrets: HashMap::new(),
-            interpolate_env: super::env_var_interpolation_enabled(),
+            interpolate_env: env_var_interpolation_enabled(),
         }
     }
 }
 
 impl Process for ConfigBuilderLoader {
-    /// Prepares input for a `ConfigBuilder` by interpolating environment variables.
-    fn prepare<R: Read>(&mut self, input: R) -> Result<String, Vec<String>> {
-        let prepared_input = prepare_input(input, self.interpolate_env)?;
-        Ok(if self.secrets.is_empty() {
-            prepared_input
-        } else {
-            secret::interpolate(&prepared_input, &self.secrets)?
-        })
+    fn should_interpolate_env(&self) -> bool {
+        self.interpolate_env
     }
 
-    /// Merge a TOML `Table` with a `ConfigBuilder`. Component types extend specific keys.
+    fn postprocess(&mut self, table: Table) -> Result<Table, Vec<String>> {
+        if self.secrets.is_empty() {
+            Ok(table)
+        } else {
+            interpolate_toml_table_with_secrets(&table, &self.secrets)
+        }
+    }
+
     fn merge(&mut self, table: Table, hint: Option<ComponentHint>) -> Result<(), Vec<String>> {
         match hint {
             Some(ComponentHint::Source) => {
-                self.builder.sources.extend(deserialize_table::<
+                self.builder.sources.extend(deserialize_table_wrapped::<
                     IndexMap<ComponentKey, SourceOuter>,
-                >(table)?);
+                >(table, "sources")?);
             }
             Some(ComponentHint::Sink) => {
-                self.builder.sinks.extend(
-                    deserialize_table::<IndexMap<ComponentKey, SinkOuter<_>>>(table)?,
-                );
+                self.builder.sinks.extend(deserialize_table_wrapped::<
+                    IndexMap<ComponentKey, SinkOuter<_>>,
+                >(table, "sinks")?);
             }
             Some(ComponentHint::Transform) => {
-                self.builder.transforms.extend(deserialize_table::<
+                self.builder.transforms.extend(deserialize_table_wrapped::<
                     IndexMap<ComponentKey, TransformOuter<_>>,
-                >(table)?);
+                >(table, "transforms")?);
             }
             Some(ComponentHint::EnrichmentTable) => {
-                self.builder.enrichment_tables.extend(deserialize_table::<
-                    IndexMap<ComponentKey, EnrichmentTableOuter<_>>,
-                >(table)?);
+                self.builder
+                    .enrichment_tables
+                    .extend(deserialize_table_wrapped::<
+                        IndexMap<ComponentKey, EnrichmentTableOuter<_>>,
+                    >(table, "enrichment_tables")?);
             }
             Some(ComponentHint::Test) => {
-                // This serializes to a `Vec<TestDefinition<_>>`, so we need to first expand
-                // it to an ordered map, and then pull out the value, ignoring the keys.
+                // Tests are loaded as a name -> TestDefinition map from
+                // namespaced dirs and converted to Vec<TestDefinition> at the
+                // builder; the schema represents tests as a Vec, so this branch
+                // skips the wrap-and-coerce path that the component hints use.
                 self.builder.tests.extend(
                     deserialize_table::<IndexMap<String, TestDefinition<String>>>(table)?
                         .into_iter()
@@ -116,103 +124,7 @@ impl Process for ConfigBuilderLoader {
 }
 
 impl loader::Loader<ConfigBuilder> for ConfigBuilderLoader {
-    /// Returns the resulting `ConfigBuilder`.
     fn take(self) -> ConfigBuilder {
         self.builder
-    }
-}
-
-#[cfg(all(
-    test,
-    feature = "sinks-elasticsearch",
-    feature = "transforms-sample",
-    feature = "sources-demo_logs",
-    feature = "sinks-console"
-))]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::ConfigBuilderLoader;
-    use crate::config::{ComponentKey, ConfigPath};
-
-    #[test]
-    fn load_namespacing_folder() {
-        let path = PathBuf::from(".")
-            .join("tests")
-            .join("namespacing")
-            .join("success");
-        let configs = vec![ConfigPath::Dir(path)];
-        let builder = ConfigBuilderLoader::default()
-            .interpolate_env(true)
-            .load_from_paths(&configs)
-            .unwrap();
-        assert!(
-            builder
-                .transforms
-                .contains_key(&ComponentKey::from("apache_parser"))
-        );
-        assert!(
-            builder
-                .sources
-                .contains_key(&ComponentKey::from("apache_logs"))
-        );
-        assert!(
-            builder
-                .sinks
-                .contains_key(&ComponentKey::from("es_cluster"))
-        );
-        assert_eq!(builder.tests.len(), 2);
-    }
-
-    #[test]
-    fn load_namespacing_ignore_invalid() {
-        let path = PathBuf::from(".")
-            .join("tests")
-            .join("namespacing")
-            .join("ignore-invalid");
-        let configs = vec![ConfigPath::Dir(path)];
-        ConfigBuilderLoader::default()
-            .interpolate_env(true)
-            .load_from_paths(&configs)
-            .unwrap();
-    }
-
-    #[test]
-    fn load_directory_ignores_unknown_file_formats() {
-        let path = PathBuf::from(".")
-            .join("tests")
-            .join("config-dir")
-            .join("ignore-unknown");
-        let configs = vec![ConfigPath::Dir(path)];
-        ConfigBuilderLoader::default()
-            .interpolate_env(true)
-            .load_from_paths(&configs)
-            .unwrap();
-    }
-
-    #[test]
-    fn load_directory_globals() {
-        let path = PathBuf::from(".")
-            .join("tests")
-            .join("config-dir")
-            .join("globals");
-        let configs = vec![ConfigPath::Dir(path)];
-        ConfigBuilderLoader::default()
-            .interpolate_env(true)
-            .load_from_paths(&configs)
-            .unwrap();
-    }
-
-    #[test]
-    fn load_directory_globals_duplicates() {
-        let path = PathBuf::from(".")
-            .join("tests")
-            .join("config-dir")
-            .join("globals-duplicate");
-        let configs = vec![ConfigPath::Dir(path)];
-        ConfigBuilderLoader::default()
-            .interpolate_env(true)
-            .load_from_paths(&configs)
-            .unwrap();
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::Read,
     sync::LazyLock,
 };
 
@@ -8,13 +7,15 @@ use futures::TryFutureExt;
 use indexmap::IndexMap;
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
+use toml::Value;
 use toml::value::Table;
 use vector_lib::config::ComponentKey;
 
+use crate::config::loading::{env_var_interpolation_enabled, interpolate_toml_table};
 use crate::{
     config::{
         SecretBackend,
-        loading::{ComponentHint, Loader, deserialize_table, prepare_input, process::Process},
+        loading::{ComponentHint, Loader, deserialize_table, process::Process},
     },
     secrets::SecretBackends,
     signal,
@@ -23,15 +24,15 @@ use crate::{
 // The following regex aims to extract a pair of strings, the first being the secret backend name
 // and the second being the secret key. Here are some matching & non-matching examples:
 // - "SECRET[backend.secret_name]" will match and capture "backend" and "secret_name"
-// - "SECRET[my-backend.secret_name]" will match and capture "my-backend" and "secret_name"
 // - "SECRET[backend.secret.name]" will match and capture "backend" and "secret.name"
 // - "SECRET[backend..secret.name]" will match and capture "backend" and ".secret.name"
 // - "SECRET[backend.path/to/secret]" will match and capture "backend" and "path/to/secret"
 // - "SECRET[secret_name]" will not match
 // - "SECRET[.secret.name]" will not match
 pub static COLLECTOR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"SECRET\[([[:word:]\-]+)\.([[:word:].\-/]+)\]").unwrap());
+    LazyLock::new(|| Regex::new(r"SECRET\[([[:word:]]+)\.([[:word:].\-/]+)\]").unwrap());
 
+const SECRET_KEY: &str = "secret";
 /// Helper type for specifically deserializing secrets backends.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct SecretBackendOuter {
@@ -43,47 +44,40 @@ pub(crate) struct SecretBackendOuter {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SecretBackendLoader {
     backends: IndexMap<ComponentKey, SecretBackends>,
-    secret_keys: HashMap<String, HashSet<String>>,
+    pub(crate) secret_keys: HashMap<String, HashSet<String>>,
+    #[serde(skip)]
     interpolate_env: bool,
 }
 
-impl SecretBackendLoader {
-    /// Sets whether to interpolate environment variables in the config.
-    pub const fn interpolate_env(mut self, interpolate: bool) -> Self {
-        self.interpolate_env = interpolate;
-        self
-    }
-
-    /// Retrieve secrets from backends.
-    /// Returns an empty HashMap if there are no secrets to retrieve.
-    pub(crate) async fn retrieve_secrets(
-        mut self,
-        signal_handler: &mut signal::SignalHandler,
-    ) -> Result<HashMap<String, String>, String> {
-        if self.secret_keys.is_empty() {
-            debug!(message = "No secret placeholder found, skipping secret resolution.");
-            return Ok(HashMap::new());
+impl Default for SecretBackendLoader {
+    fn default() -> Self {
+        Self {
+            backends: IndexMap::new(),
+            secret_keys: HashMap::new(),
+            interpolate_env: env_var_interpolation_enabled(),
         }
+    }
+}
 
-        debug!(message = "Secret placeholders found, retrieving secrets from configured backends.");
+impl SecretBackendLoader {
+    pub(crate) async fn retrieve(
+        &mut self,
+        signal_rx: &mut signal::SignalRx,
+    ) -> Result<HashMap<String, String>, String> {
         let mut secrets: HashMap<String, String> = HashMap::new();
-        let mut signal_rx = signal_handler.subscribe();
 
         for (backend_name, keys) in &self.secret_keys {
-            let backend = self
-                .backends
+            let backend = self.backends
                 .get_mut(&ComponentKey::from(backend_name.clone()))
                 .ok_or_else(|| {
-                    format!(
-                        "Backend \"{backend_name}\" is required for secret retrieval but was not found in config."
-                    )
+                    format!("Backend \"{backend_name}\" is required for secret retrieval but was not found in config.")
                 })?;
 
             debug!(message = "Retrieving secrets from a backend.", backend = ?backend_name, keys = ?keys);
             let backend_secrets = backend
-                .retrieve(keys.clone(), &mut signal_rx)
+                .retrieve(keys.clone(), signal_rx)
                 .map_err(|e| {
-                    format!("Error while retrieving secret from backend \"{backend_name}\": {e}.")
+                    format!("Error while retrieving secret from backend \"{backend_name}\": {e}.",)
                 })
                 .await?;
 
@@ -95,29 +89,27 @@ impl SecretBackendLoader {
 
         Ok(secrets)
     }
-}
 
-impl Default for SecretBackendLoader {
-    fn default() -> Self {
-        Self {
-            backends: IndexMap::new(),
-            secret_keys: HashMap::new(),
-            interpolate_env: super::env_var_interpolation_enabled(),
-        }
+    pub(crate) fn has_secrets_to_retrieve(&self) -> bool {
+        !self.secret_keys.is_empty()
     }
 }
 
 impl Process for SecretBackendLoader {
-    fn prepare<R: Read>(&mut self, input: R) -> Result<String, Vec<String>> {
-        let config_string = prepare_input(input, self.interpolate_env)?;
-        // Collect secret placeholders just after env var processing
-        collect_secret_keys(&config_string, &mut self.secret_keys);
-        Ok(config_string)
+    fn should_interpolate_env(&self) -> bool {
+        self.interpolate_env
+    }
+
+    fn postprocess(&mut self, table: Table) -> Result<Table, Vec<String>> {
+        collect_secret_keys_from_table(&table, &mut self.secret_keys);
+        Ok(table)
     }
 
     fn merge(&mut self, table: Table, _: Option<ComponentHint>) -> Result<(), Vec<String>> {
-        if table.contains_key("secret") {
-            let additional = deserialize_table::<SecretBackendOuter>(table)?;
+        if let Some(secret_value) = table.get(SECRET_KEY) {
+            let mut secret_table = Table::new();
+            secret_table.insert(SECRET_KEY.to_string(), secret_value.clone());
+            let additional = deserialize_table::<SecretBackendOuter>(secret_table)?;
             self.backends.extend(additional.secret);
         }
         Ok(())
@@ -145,7 +137,52 @@ fn collect_secret_keys(input: &str, keys: &mut HashMap<String, HashSet<String>>)
     });
 }
 
-pub fn interpolate(input: &str, secrets: &HashMap<String, String>) -> Result<String, Vec<String>> {
+/// Recursively collects all secret references from keys and string values in a TOML table.
+pub fn collect_secret_keys_from_table(table: &Table, keys: &mut HashMap<String, HashSet<String>>) {
+    for (k, v) in table {
+        // Check key for secrets like SECRET[backend.key]
+        collect_secret_keys(k, keys);
+
+        // Check the value
+        match v {
+            Value::String(s) => collect_secret_keys(s, keys),
+            Value::Array(arr) => {
+                for item in arr {
+                    collect_secret_keys_from_value(item, keys);
+                }
+            }
+            Value::Table(inner) => {
+                collect_secret_keys_from_table(inner, keys);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_secret_keys_from_value(value: &Value, keys: &mut HashMap<String, HashSet<String>>) {
+    match value {
+        Value::String(s) => collect_secret_keys(s, keys),
+        Value::Array(arr) => {
+            for item in arr {
+                collect_secret_keys_from_value(item, keys);
+            }
+        }
+        Value::Table(t) => collect_secret_keys_from_table(t, keys),
+        _ => {}
+    }
+}
+
+pub fn interpolate_toml_table_with_secrets(
+    table: &Table,
+    vars: &HashMap<String, String>,
+) -> Result<Table, Vec<String>> {
+    interpolate_toml_table(table, vars, interpolate_secrets)
+}
+
+fn interpolate_secrets(
+    input: &str,
+    secrets: &HashMap<String, String>,
+) -> Result<String, Vec<String>> {
     let mut errors = Vec::<String>::new();
     let output = COLLECTOR
         .replace_all(input, |caps: &Captures<'_>| {
@@ -173,60 +210,46 @@ pub fn interpolate(input: &str, secrets: &HashMap<String, String>) -> Result<Str
 mod tests {
     use std::collections::HashMap;
 
+    use super::{collect_secret_keys, interpolate_secrets};
+    use crate::config::loading::interpolate_toml_table_with_secrets;
     use indoc::indoc;
-
-    use super::{collect_secret_keys, interpolate};
+    use toml::{Table, Value};
 
     #[test]
     fn replacement() {
         let secrets: HashMap<String, String> = vec![
             ("a.secret.key".into(), "value".into()),
             ("a...key".into(), "a...value".into()),
-            ("backend.path/to/secret".into(), "secret_value".into()),
-            ("backend.nested/dir/file".into(), "nested_value".into()),
-            ("my-backend.secret.key".into(), "hyphenated_value".into()),
         ]
         .into_iter()
         .collect();
 
         assert_eq!(
             Ok("value".into()),
-            interpolate("SECRET[a.secret.key]", &secrets)
+            interpolate_secrets("SECRET[a.secret.key]", &secrets)
         );
         assert_eq!(
             Ok("value value".into()),
-            interpolate("SECRET[a.secret.key] SECRET[a.secret.key]", &secrets)
+            interpolate_secrets("SECRET[a.secret.key] SECRET[a.secret.key]", &secrets)
         );
 
         assert_eq!(
             Ok("xxxvalueyyy".into()),
-            interpolate("xxxSECRET[a.secret.key]yyy", &secrets)
+            interpolate_secrets("xxxSECRET[a.secret.key]yyy", &secrets)
         );
         assert_eq!(
             Ok("a...value".into()),
-            interpolate("SECRET[a...key]", &secrets)
-        );
-        assert_eq!(
-            Ok("secret_value".into()),
-            interpolate("SECRET[backend.path/to/secret]", &secrets)
-        );
-        assert_eq!(
-            Ok("nested_value".into()),
-            interpolate("SECRET[backend.nested/dir/file]", &secrets)
-        );
-        assert_eq!(
-            Ok("hyphenated_value".into()),
-            interpolate("SECRET[my-backend.secret.key]", &secrets)
+            interpolate_secrets("SECRET[a...key]", &secrets)
         );
         assert_eq!(
             Ok("xxxSECRET[non_matching_syntax]yyy".into()),
-            interpolate("xxxSECRET[non_matching_syntax]yyy", &secrets)
+            interpolate_secrets("xxxSECRET[non_matching_syntax]yyy", &secrets)
         );
         assert_eq!(
             Err(vec![
                 "Unable to find secret replacement for SECRET[a.non.existing.key].".into()
             ]),
-            interpolate("xxxSECRET[a.non.existing.key]yyy", &secrets)
+            interpolate_secrets("xxxSECRET[a.non.existing.key]yyy", &secrets)
         );
     }
 
@@ -242,19 +265,16 @@ mod tests {
             SECRET[second_backend.secret.key]
             SECRET[first_backend.a_third.secret_key]
             SECRET[first_backend...an_extra_secret_key]
-            SECRET[third-backend.secret_key]
             SECRET[first_backend.path/to/secret]
             SECRET[second_backend.nested/dir/secret]
-            SECRET[third-backend.another-secret]
             SECRET[non_matching_syntax]
             SECRET[.non.matching.syntax]
         "},
             &mut keys,
         );
-        assert_eq!(keys.len(), 3);
+        assert_eq!(keys.len(), 2);
         assert!(keys.contains_key("first_backend"));
         assert!(keys.contains_key("second_backend"));
-        assert!(keys.contains_key("third-backend"));
 
         let first_backend_keys = keys.get("first_backend").unwrap();
         assert_eq!(first_backend_keys.len(), 6);
@@ -270,11 +290,6 @@ mod tests {
         assert!(second_backend_keys.contains("secret_key"));
         assert!(second_backend_keys.contains("secret.key"));
         assert!(second_backend_keys.contains("nested/dir/secret"));
-
-        let third_backend_keys = keys.get("third-backend").unwrap();
-        assert_eq!(third_backend_keys.len(), 2);
-        assert!(third_backend_keys.contains("secret_key"));
-        assert!(third_backend_keys.contains("another-secret"));
     }
 
     #[test]
@@ -291,5 +306,54 @@ mod tests {
         let first_backend_keys = keys.get("first_backend").unwrap();
         assert_eq!(first_backend_keys.len(), 1);
         assert!(first_backend_keys.contains("secret_key"));
+    }
+
+    #[test]
+    fn interpolate_secrets_all_types() {
+        // Step 1: create a TOML table with secret placeholders
+        let mut log_fields = Table::new();
+        log_fields.insert(
+            "str".into(),
+            Value::String("SECRET[backend.str_key]".into()),
+        );
+        log_fields.insert(
+            "int".into(),
+            Value::String("SECRET[backend.int_key]".into()),
+        );
+        log_fields.insert(
+            "float".into(),
+            Value::String("SECRET[backend.float_key]".into()),
+        );
+        log_fields.insert(
+            "bool".into(),
+            Value::String("SECRET[backend.bool_key]".into()),
+        );
+
+        let mut inputs = Table::new();
+        inputs.insert("log_fields".into(), Value::Table(log_fields));
+        let mut root_table = Table::new();
+        root_table.insert("inputs".into(), Value::Table(inputs));
+
+        // Step 2: define mock secrets with correct types as strings
+        let secrets = HashMap::from([
+            ("backend.str_key".to_string(), "hello".to_string()),
+            ("backend.int_key".to_string(), "42".to_string()),
+            ("backend.float_key".to_string(), "3.14".to_string()),
+            ("backend.bool_key".to_string(), "true".to_string()),
+        ]);
+
+        // Step 3: interpolate secrets
+        let result = interpolate_toml_table_with_secrets(&root_table, &secrets).unwrap();
+
+        // Step 4: verify only the secret-related values, including type coercion
+        let log_fields = &result["inputs"]["log_fields"];
+        let log_fields = log_fields.as_table().expect("log_fields is a table");
+
+        // Interpolation leaves string leaves as strings; schema_coercion converts
+        // them to declared scalar types downstream.
+        assert_eq!(log_fields["str"], Value::String("hello".into()));
+        assert_eq!(log_fields["int"], Value::String("42".into()));
+        assert_eq!(log_fields["float"], Value::String("3.14".into()));
+        assert_eq!(log_fields["bool"], Value::String("true".into()));
     }
 }

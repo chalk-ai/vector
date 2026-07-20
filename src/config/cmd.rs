@@ -4,7 +4,8 @@ use clap::Parser;
 use serde_json::Value;
 
 use super::{ConfigBuilder, load_source_from_paths, loading::ConfigBuilderLoader, process_paths};
-use crate::{cli::handle_config_errors, config};
+use crate::cli::handle_config_errors;
+use crate::config;
 
 #[derive(Parser, Debug, Clone)]
 #[command(rename_all = "kebab-case")]
@@ -213,12 +214,14 @@ mod tests {
         SinkDescription, SourceDescription, TransformDescription,
     };
 
-    use super::merge_json;
+    use crate::config::{Format, interpolate};
     use crate::{
-        config::{ConfigBuilder, Format, cmd::serialize_to_json, vars},
+        config::{ConfigBuilder, cmd::serialize_to_json},
         generate,
         generate::{TransformInputsStrategy, generate_example},
     };
+
+    use super::merge_json;
 
     #[test]
     fn test_array_override() {
@@ -248,14 +251,15 @@ mod tests {
             r#"
             [sources.in]
             type = "demo_logs"
-            format = "${{{env_var}}}"
+            format = "${{{}}}"
 
             [sinks.out]
             type = "blackhole"
-            inputs = ["${{{env_var_in_arr}}}"]
-        "#
+            inputs = ["${{{}}}"]
+        "#,
+            env_var, env_var_in_arr
         );
-        let interpolated_config_source = vars::interpolate(
+        let interpolated_config_source = interpolate(
             config_source.as_ref(),
             &HashMap::from([
                 (env_var.to_string(), "syslog".to_string()),
@@ -320,24 +324,19 @@ mod tests {
         // We also append a fixed `remap` transform to the transforms list. This
         // ensures sink inputs are consistent since `generate` uses the last
         // transform the input for each sink.
+        fn pair(s: &&str) -> String {
+            format!("{s}:{s}")
+        }
         let generate_config_str = format!(
             "{}/{}/{}",
-            sources
-                .iter()
-                .map(|source| format!("{source}:{source}"))
-                .collect::<Vec<_>>()
-                .join(","),
+            sources.iter().map(pair).collect::<Vec<_>>().join(","),
             transforms
                 .iter()
-                .map(|transform| format!("{transform}:{transform}"))
+                .map(pair)
                 .chain(vec!["manually-added-remap:remap".to_string()])
                 .collect::<Vec<_>>()
                 .join(","),
-            sinks
-                .iter()
-                .map(|sink| format!("{sink}:{sink}"))
-                .collect::<Vec<_>>()
-                .join(","),
+            sinks.iter().map(pair).collect::<Vec<_>>().join(","),
         );
         let opts = generate::Opts {
             fragment: true,
