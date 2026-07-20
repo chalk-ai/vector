@@ -652,7 +652,17 @@ impl OTLPDataConverter {
             buckets.iter().map(|bucket| bucket.upper_limit),
             "histogram bucket upper_limit",
         )?;
+
         let sum = reject_invalid_sum(count, sum, "histogram")?;
+
+        // A bucket with a negative upper bound and a nonzero count proves at least one
+        // negative event was recorded, even if the aggregate sum is non-negative. OTLP
+        // requires sum to be omitted in that case (metrics.proto: sum should only be
+        // filled out when measuring non-negative events).
+        let has_negative_bucket = buckets
+            .iter()
+            .any(|bucket| bucket.upper_limit < 0.0 && bucket.count > 0);
+        let sum = if has_negative_bucket { None } else { sum };
 
         let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
         let has_inf_bucket = buckets
@@ -732,7 +742,12 @@ impl OTLPDataConverter {
             quantiles.iter().map(|quantile| quantile.quantile),
             "summary quantile",
         )?;
-        let sum = reject_invalid_sum(count, sum, "summary")?;
+
+        let sum =
+            reject_invalid_sum(count, sum, "summary")?.ok_or_else(|| -> vector_common::Error {
+                "summary sum must not be negative; the OTLP summary sum field cannot be omitted"
+                    .into()
+            })?;
 
         let quantile_values = quantiles
             .iter()
@@ -748,7 +763,7 @@ impl OTLPDataConverter {
                 start_time_unix_nano: 0,
                 time_unix_nano: self.timestamp_ns,
                 count: *count,
-                sum: sum.unwrap_or_default(),
+                sum,
                 quantile_values,
                 flags: 0,
             }],
@@ -1010,6 +1025,83 @@ mod tests {
     }
 
     #[test]
+    fn negative_bucket_with_nonzero_count_omits_histogram_sum() {
+        // A bucket with a negative upper bound and a nonzero count proves a negative
+        // event was recorded, even though the aggregate sum here is positive. OTLP
+        // requires sum to be omitted in that case rather than emitted as-is.
+        let buckets = vec![
+            Bucket {
+                upper_limit: -5.0,
+                count: 1,
+            },
+            Bucket {
+                upper_limit: 1.0,
+                count: 0,
+            },
+            Bucket {
+                upper_limit: f64::INFINITY,
+                count: 3,
+            },
+        ];
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count: 4,
+                sum: 10.0,
+            },
+        );
+
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
+        match data {
+            Data::Histogram(histogram) => {
+                let point = histogram.data_points.into_iter().next().unwrap();
+                assert_eq!(point.sum, None);
+            }
+            other => panic!("expected Data::Histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negative_bucket_with_zero_count_keeps_histogram_sum() {
+        // A negative bound with a zero count does not prove any negative event was
+        // recorded, so the aggregate sum must still be emitted.
+        let buckets = vec![
+            Bucket {
+                upper_limit: -5.0,
+                count: 0,
+            },
+            Bucket {
+                upper_limit: 1.0,
+                count: 1,
+            },
+            Bucket {
+                upper_limit: f64::INFINITY,
+                count: 3,
+            },
+        ];
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count: 4,
+                sum: 10.0,
+            },
+        );
+
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
+        match data {
+            Data::Histogram(histogram) => {
+                let point = histogram.data_points.into_iter().next().unwrap();
+                assert_eq!(point.sum, Some(10.0));
+            }
+            other => panic!("expected Data::Histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn nan_histogram_sum_is_rejected() {
         // A NaN sum must be rejected even when multiple valid buckets are present.
         let metric = MetricEvent::new(
@@ -1062,6 +1154,37 @@ mod tests {
                 ],
                 count: 3,
                 sum: f64::NAN,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn negative_summary_sum_is_rejected() {
+        // Unlike histogram's optional sum, OTLP summary's sum field cannot be omitted,
+        // so a negative sum must be rejected
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedSummary {
+                quantiles: vec![
+                    Quantile {
+                        quantile: 0.5,
+                        value: 1.0,
+                    },
+                    Quantile {
+                        quantile: 0.9,
+                        value: 2.0,
+                    },
+                    Quantile {
+                        quantile: 0.99,
+                        value: 3.0,
+                    },
+                ],
+                count: 3,
+                sum: -1.0,
             },
         )
         .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
