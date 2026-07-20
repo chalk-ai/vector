@@ -218,12 +218,12 @@ pub fn build_proxy_connector(
     // proxy's own certificate would be verified against the destination name and fail with a
     // hostname mismatch.
     let proxy_authorities = if proxy_config.enabled {
-        ProxyAuthorities {
+        TlsProxyAuthorities {
             http: tls_proxy_authority(proxy_config.http.as_deref()),
             https: tls_proxy_authority(proxy_config.https.as_deref()),
         }
     } else {
-        ProxyAuthorities::default()
+        TlsProxyAuthorities::default()
     };
 
     // `server_name` still cannot be applied to the tunneled destination TLS of a proxied HTTPS
@@ -260,7 +260,7 @@ pub fn build_proxy_connector(
 pub fn build_tls_connector(
     tls_settings: MaybeTlsSettings,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
-    build_https_connector(tls_settings, ProxyAuthorities::default())
+    build_https_connector(tls_settings, TlsProxyAuthorities::default())
 }
 
 /// Authorities (host and optional port) of the configured forward proxies that are reached over TLS
@@ -270,12 +270,12 @@ pub fn build_tls_connector(
 /// they are not tracked; matching on the full authority also avoids mistaking a direct connection
 /// to a destination that merely shares a host with a proxy (e.g. on a different port).
 #[derive(Clone, Default)]
-struct ProxyAuthorities {
+struct TlsProxyAuthorities {
     http: Option<(String, Option<u16>)>,
     https: Option<(String, Option<u16>)>,
 }
 
-impl ProxyAuthorities {
+impl TlsProxyAuthorities {
     fn matches(&self, uri: &http::Uri) -> bool {
         if self.http.is_none() && self.https.is_none() {
             return false;
@@ -305,7 +305,7 @@ fn tls_proxy_authority(url: Option<&str>) -> Option<(String, Option<u16>)> {
 /// proxy connection would verify the proxy certificate against the destination name.
 fn build_https_connector(
     tls_settings: MaybeTlsSettings,
-    proxy_authorities: ProxyAuthorities,
+    proxy_authorities: TlsProxyAuthorities,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn proxy_authorities_match_full_authority() {
-        let authorities = ProxyAuthorities {
+        let authorities = TlsProxyAuthorities {
             http: None,
             https: tls_proxy_authority(Some("https://proxy.example:3128")),
         };
