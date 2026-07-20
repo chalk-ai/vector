@@ -1,4 +1,4 @@
-# RFC DRAFT - Split Component Lifecycle into Four Distinct Phases
+# RFC - Split Component Lifecycle into Four Distinct Phases
 
 Component config traits currently conflate structural validation, environment validation, pure
 construction, and task spawning into a single `build()` method. This is most acute for
