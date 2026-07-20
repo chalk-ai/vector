@@ -212,9 +212,24 @@ pub fn build_proxy_connector(
     tls_settings: MaybeTlsSettings,
     proxy_config: &ProxyConfig,
 ) -> Result<ProxyConnector<HttpsConnector<HttpConnector>>, HttpError> {
-    // `server_name` is not applied to proxied (tunneled) TLS connections, because
-    // `hyper-proxy` offers no per-connection callback and verifies against the URL
-    // host. Warn when the combination that would silently misbehave is configured.
+    // The inner connector dials the proxy for proxied requests and the destination directly for
+    // `no_proxy` requests. The `server_name` override must apply only to the destination, so
+    // collect the proxy hosts to exclude from it; otherwise an HTTPS proxy's own certificate would
+    // be verified against the destination name and fail with a hostname mismatch.
+    let proxy_hosts: Vec<String> = if proxy_config.enabled {
+        [proxy_config.http.as_deref(), proxy_config.https.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|url| url.parse::<http::Uri>().ok())
+            .filter_map(|uri| uri.host().map(str::to_owned))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // `server_name` still cannot be applied to the tunneled destination TLS of a proxied HTTPS
+    // request: `hyper-proxy` offers no per-connection callback there and verifies against the
+    // destination URL host. Warn when that combination is configured.
     if proxy_config.enabled
         && (proxy_config.http.is_some() || proxy_config.https.is_some())
         && let Some(tls) = tls_settings.tls()
@@ -232,7 +247,7 @@ pub fn build_proxy_connector(
     let tls = tls_connector_builder(&tls_settings)
         .context(BuildTlsConnectorSnafu)?
         .build();
-    let https = build_tls_connector(tls_settings)?;
+    let https = build_https_connector(tls_settings, proxy_hosts)?;
     let mut proxy = ProxyConnector::new(https).unwrap();
     // Make proxy connector aware of user TLS settings by setting the TLS connector:
     // https://github.com/vectordotdev/vector/issues/13683
@@ -246,6 +261,16 @@ pub fn build_proxy_connector(
 pub fn build_tls_connector(
     tls_settings: MaybeTlsSettings,
 ) -> Result<HttpsConnector<HttpConnector>, HttpError> {
+    build_https_connector(tls_settings, Vec::new())
+}
+
+/// Build an HTTPS connector, skipping the `tls.server_name` override for connections whose target
+/// host is in `proxy_hosts`. The override must only apply to the upstream destination; applying it
+/// to a proxy connection would verify the proxy certificate against the destination name.
+fn build_https_connector(
+    tls_settings: MaybeTlsSettings,
+    proxy_hosts: Vec<String>,
+) -> Result<HttpsConnector<HttpConnector>, HttpError> {
     let mut http = HttpConnector::new();
     http.enforce_http(false);
 
@@ -253,9 +278,12 @@ pub fn build_tls_connector(
     let mut https = HttpsConnector::with_connector(http, tls).context(MakeHttpsConnectorSnafu)?;
 
     let settings = tls_settings.tls().cloned();
-    https.set_callback(move |c, _uri| {
+    https.set_callback(move |c, uri| {
         if let Some(settings) = &settings {
-            settings.apply_connect_configuration(c)
+            let skip_server_name = uri
+                .host()
+                .is_some_and(|host| proxy_hosts.iter().any(|proxy| proxy == host));
+            settings.apply_connect_configuration(c, skip_server_name)
         } else {
             Ok(())
         }
