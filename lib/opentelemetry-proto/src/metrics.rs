@@ -7,7 +7,7 @@ use vector_core::event::{
 use super::common::tag_set_to_any_value;
 use super::proto::{
     collector::metrics::v1::ExportMetricsServiceRequest,
-    common::v1::{InstrumentationScope, KeyValue},
+    common::v1::{AnyValue, InstrumentationScope, KeyValue},
     metrics::v1::{
         AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
         Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
@@ -444,8 +444,16 @@ impl ToF64 for Option<NumberDataPointValue> {
     }
 }
 
-/// Splits a metric's tags back into the `Resource`, `InstrumentationScope`, and data point
-/// `attributes` they were flattened from by [`build_metric_tags`].
+fn push_key_value(attributes: &mut Vec<KeyValue>, key: &str, value: AnyValue) {
+    if key.trim().is_empty() {
+        return;
+    }
+    attributes.push(KeyValue {
+        key: key.to_string(),
+        value: Some(value),
+    });
+}
+
 pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, Vec<KeyValue>) {
     let mut resource_attributes = Vec::new();
     let mut scope_name = String::new();
@@ -453,7 +461,7 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
     let mut scope_attributes = Vec::new();
     let mut attributes = Vec::new();
 
-    for (key, tag_set) in tags.iter_sets() {
+    for (key, tag_set) in tags.iter_sets().filter(|(key, _)| !key.trim().is_empty()) {
         // `scope.name`/`scope.version` are scalar string fields on `InstrumentationScope`,
         // not attributes, so they collapse to a single representative value.
         if key == "scope.name" {
@@ -469,20 +477,11 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
         };
 
         if let Some(rest) = key.strip_prefix("resource.") {
-            resource_attributes.push(KeyValue {
-                key: rest.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut resource_attributes, rest, value);
         } else if let Some(rest) = key.strip_prefix("scope.") {
-            scope_attributes.push(KeyValue {
-                key: rest.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut scope_attributes, rest, value);
         } else {
-            attributes.push(KeyValue {
-                key: key.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut attributes, key, value);
         }
     }
 
