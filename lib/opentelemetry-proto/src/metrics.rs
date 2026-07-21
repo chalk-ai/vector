@@ -585,19 +585,38 @@ impl OTLPDataConverter {
         if value.is_nan() {
             return Err("counter value must not be NaN".into());
         }
-        let is_monotonic = matches!(self.kind, MetricKind::Absolute) || *value >= 0.0;
-        Ok(Data::Sum(Sum {
-            data_points: vec![NumberDataPoint {
-                attributes: self.attrs,
-                start_time_unix_nano: self.start_time_ns,
-                time_unix_nano: self.timestamp_ns,
-                value: Some(NumberDataPointValue::AsDouble(*value)),
-                exemplars: Vec::new(),
-                flags: 0,
-            }],
-            aggregation_temporality: self.temporality,
-            is_monotonic,
-        }))
+        match self.kind {
+            MetricKind::Absolute => {
+                if *value < 0.0 {
+                    Err("absolute counter value cannot be negative".into())
+                } else {
+                    Ok(Data::Sum(Sum {
+                        data_points: vec![NumberDataPoint {
+                            attributes: self.attrs,
+                            start_time_unix_nano: self.start_time_ns,
+                            time_unix_nano: self.timestamp_ns,
+                            value: Some(NumberDataPointValue::AsDouble(*value)),
+                            exemplars: Vec::new(),
+                            flags: 0,
+                        }],
+                        aggregation_temporality: self.temporality,
+                        is_monotonic: true,
+                    }))
+                }
+            }
+            MetricKind::Incremental => Ok(Data::Sum(Sum {
+                data_points: vec![NumberDataPoint {
+                    attributes: self.attrs,
+                    start_time_unix_nano: self.start_time_ns,
+                    time_unix_nano: self.timestamp_ns,
+                    value: Some(NumberDataPointValue::AsDouble(*value)),
+                    exemplars: Vec::new(),
+                    flags: 0,
+                }],
+                aggregation_temporality: self.temporality,
+                is_monotonic: *value >= 0.0,
+            })),
+        }
     }
 
     fn gauge(self, value: &f64) -> Result<Data, vector_common::Error> {
