@@ -54,6 +54,17 @@ services:
           --aggregation-temporality=cumulative \
           --telemetry-attributes='metric.type="sum"' \
           --rate=0
+        # Generate 50 Histogram metrics
+        telemetrygen metrics \
+          --otlp-endpoint=otel-collector-source:4318 \
+          --otlp-insecure \
+          --otlp-http \
+          --metrics=50 \
+          --metric-type=Histogram \
+          --otlp-metric-name=histogram_metric \
+          --aggregation-temporality=cumulative \
+          --telemetry-attributes='metric.type="histogram"' \
+          --rate=0
 
   otel-collector-sink:
     container_name: otel-collector-sink-native

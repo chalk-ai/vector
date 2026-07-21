@@ -6,13 +6,15 @@ use vector_lib::opentelemetry::proto::{
     METRICS_REQUEST_MESSAGE_TYPE,
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::any_value::Value as AnyValueEnum,
-    metrics::v1::{Gauge, Sum, metric::Data as MetricData},
+    metrics::v1::{Gauge, Histogram, Sum, metric::Data as MetricData},
 };
 
-// telemetrygen emits 50 Gauge + 50 Sum. The source collector fans out to Vector over both gRPC
-// and HTTP, so Vector sees each metric twice: 100 gauge + 100 sum data points.
+// telemetrygen emits 50 Gauge + 50 Sum + 50 Histogram. The source collector fans out to Vector
+// over both gRPC and HTTP, so Vector sees each metric twice: 100 gauge + 100 sum + 100 histogram
+// data points.
 const EXPECTED_GAUGE: usize = 100;
 const EXPECTED_SUM: usize = 100;
+const EXPECTED_HISTOGRAM: usize = 100;
 const EXPECTED_SCOPE_NAME: &str = "vector-e2e-metrics";
 const EXPECTED_SCOPE_VERSION: &str = "1.2.3";
 
@@ -44,9 +46,10 @@ fn parse_export_metrics_request(content: &str) -> Result<ExportMetricsServiceReq
 
 /// Counts data points per (metric name, OTLP type) and validates each point:
 /// non-empty name, non-zero timestamp, a value, and a round-tripped `metric.type` attribute.
-fn tally_and_validate(request: &ExportMetricsServiceRequest) -> (usize, usize) {
+fn tally_and_validate(request: &ExportMetricsServiceRequest) -> (usize, usize, usize) {
     let mut gauge = 0;
     let mut sum = 0;
+    let mut histogram = 0;
 
     for rm in &request.resource_metrics {
         for sm in &rm.scope_metrics {
@@ -77,12 +80,20 @@ fn tally_and_validate(request: &ExportMetricsServiceRequest) -> (usize, usize) {
                         }
                         sum += data_points.len();
                     }
+                    MetricData::Histogram(Histogram { data_points, .. }) => {
+                        assert_eq!(metric.name, "histogram_metric");
+                        for dp in data_points {
+                            assert!(dp.time_unix_nano > 0, "histogram point has zero timestamp");
+                            assert_metric_type_attr(&dp.attributes, "histogram");
+                        }
+                        histogram += data_points.len();
+                    }
                     other => panic!("unexpected metric type for {}: {other:?}", metric.name),
                 }
             }
         }
     }
-    (gauge, sum)
+    (gauge, sum, histogram)
 }
 
 fn assert_metric_type_attr(
@@ -114,7 +125,11 @@ fn vector_native_metrics_encode_to_otlp() {
         |rm| rm.resource.as_ref(),
     );
 
-    let (gauge, sum) = tally_and_validate(&request);
+    let (gauge, sum, histogram) = tally_and_validate(&request);
     assert_eq!(gauge, EXPECTED_GAUGE, "gauge_metric data point count");
     assert_eq!(sum, EXPECTED_SUM, "sum_metric data point count");
+    assert_eq!(
+        histogram, EXPECTED_HISTOGRAM,
+        "histogram_metric data point count"
+    );
 }
