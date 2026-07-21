@@ -7,7 +7,7 @@ use vector_core::event::{
 use super::common::tag_set_to_any_value;
 use super::proto::{
     collector::metrics::v1::ExportMetricsServiceRequest,
-    common::v1::{InstrumentationScope, KeyValue},
+    common::v1::{AnyValue, InstrumentationScope, KeyValue},
     metrics::v1::{
         AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
         Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
@@ -444,8 +444,16 @@ impl ToF64 for Option<NumberDataPointValue> {
     }
 }
 
-/// Splits a metric's tags back into the `Resource`, `InstrumentationScope`, and data point
-/// `attributes` they were flattened from by [`build_metric_tags`].
+fn push_key_value(attributes: &mut Vec<KeyValue>, key: &str, value: AnyValue) {
+    if key.trim().is_empty() {
+        return;
+    }
+    attributes.push(KeyValue {
+        key: key.to_string(),
+        value: Some(value),
+    });
+}
+
 pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, Vec<KeyValue>) {
     let mut resource_attributes = Vec::new();
     let mut scope_name = String::new();
@@ -453,7 +461,7 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
     let mut scope_attributes = Vec::new();
     let mut attributes = Vec::new();
 
-    for (key, tag_set) in tags.iter_sets() {
+    for (key, tag_set) in tags.iter_sets().filter(|(key, _)| !key.trim().is_empty()) {
         // `scope.name`/`scope.version` are scalar string fields on `InstrumentationScope`,
         // not attributes, so they collapse to a single representative value.
         if key == "scope.name" {
@@ -469,20 +477,11 @@ pub fn split_metric_tags(tags: &MetricTags) -> (Resource, InstrumentationScope, 
         };
 
         if let Some(rest) = key.strip_prefix("resource.") {
-            resource_attributes.push(KeyValue {
-                key: rest.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut resource_attributes, rest, value);
         } else if let Some(rest) = key.strip_prefix("scope.") {
-            scope_attributes.push(KeyValue {
-                key: rest.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut scope_attributes, rest, value);
         } else {
-            attributes.push(KeyValue {
-                key: key.to_string(),
-                value: Some(value),
-            });
+            push_key_value(&mut attributes, key, value);
         }
     }
 
@@ -522,6 +521,9 @@ fn reject_invalid_sum(
     sum: &f64,
     description: &str,
 ) -> Result<Option<f64>, vector_common::Error> {
+    if sum.is_nan() {
+        return Err(format!("{description} sum must not be NaN").into());
+    }
     if *count == 0 && *sum != 0.0 {
         Err(format!("{description} sum ({sum}) must be zero when count is zero").into())
     } else {
@@ -555,8 +557,8 @@ impl OTLPDataConverter {
 
     fn metric_value_to_data(self, value: &MetricValue) -> Result<Data, vector_common::Error> {
         match value {
-            MetricValue::Counter { value } => Ok(self.counter(value)),
-            MetricValue::Gauge { value } => Ok(self.gauge(value)),
+            MetricValue::Counter { value } => self.counter(value),
+            MetricValue::Gauge { value } => self.gauge(value),
             MetricValue::AggregatedHistogram {
                 buckets,
                 count,
@@ -579,24 +581,49 @@ impl OTLPDataConverter {
             }
         }
     }
-    fn counter(self, value: &f64) -> Data {
-        let is_monotonic = matches!(self.kind, MetricKind::Absolute) || *value >= 0.0;
-        Data::Sum(Sum {
-            data_points: vec![NumberDataPoint {
-                attributes: self.attrs,
-                start_time_unix_nano: self.start_time_ns,
-                time_unix_nano: self.timestamp_ns,
-                value: Some(NumberDataPointValue::AsDouble(*value)),
-                exemplars: Vec::new(),
-                flags: 0,
-            }],
-            aggregation_temporality: self.temporality,
-            is_monotonic,
-        })
+    fn counter(self, value: &f64) -> Result<Data, vector_common::Error> {
+        if value.is_nan() {
+            return Err("counter value must not be NaN".into());
+        }
+        match self.kind {
+            MetricKind::Absolute => {
+                if *value < 0.0 {
+                    Err("absolute counter value cannot be negative".into())
+                } else {
+                    Ok(Data::Sum(Sum {
+                        data_points: vec![NumberDataPoint {
+                            attributes: self.attrs,
+                            start_time_unix_nano: self.start_time_ns,
+                            time_unix_nano: self.timestamp_ns,
+                            value: Some(NumberDataPointValue::AsDouble(*value)),
+                            exemplars: Vec::new(),
+                            flags: 0,
+                        }],
+                        aggregation_temporality: self.temporality,
+                        is_monotonic: true,
+                    }))
+                }
+            }
+            MetricKind::Incremental => Ok(Data::Sum(Sum {
+                data_points: vec![NumberDataPoint {
+                    attributes: self.attrs,
+                    start_time_unix_nano: self.start_time_ns,
+                    time_unix_nano: self.timestamp_ns,
+                    value: Some(NumberDataPointValue::AsDouble(*value)),
+                    exemplars: Vec::new(),
+                    flags: 0,
+                }],
+                aggregation_temporality: self.temporality,
+                is_monotonic: *value >= 0.0,
+            })),
+        }
     }
 
-    fn gauge(self, value: &f64) -> Data {
-        match self.kind {
+    fn gauge(self, value: &f64) -> Result<Data, vector_common::Error> {
+        if value.is_nan() {
+            return Err("gauge value must not be NaN".into());
+        }
+        Ok(match self.kind {
             MetricKind::Absolute => Data::Gauge(Gauge {
                 data_points: vec![NumberDataPoint {
                     attributes: self.attrs,
@@ -619,7 +646,7 @@ impl OTLPDataConverter {
                 aggregation_temporality: self.temporality,
                 is_monotonic: false,
             }),
-        }
+        })
     }
 
     fn aggregated_histogram(
@@ -628,6 +655,14 @@ impl OTLPDataConverter {
         count: &u64,
         sum: &f64,
     ) -> Result<Data, vector_common::Error> {
+        if let Some(bucket) = buckets.iter().find(|bucket| bucket.upper_limit.is_nan()) {
+            return Err(format!(
+                "histogram bucket upper_limit must not be NaN, got {}",
+                bucket.upper_limit
+            )
+            .into());
+        }
+
         let mut buckets = buckets.to_owned();
         buckets.sort_by(|a, b| a.upper_limit.total_cmp(&b.upper_limit));
 
@@ -635,7 +670,17 @@ impl OTLPDataConverter {
             buckets.iter().map(|bucket| bucket.upper_limit),
             "histogram bucket upper_limit",
         )?;
+
         let sum = reject_invalid_sum(count, sum, "histogram")?;
+
+        // A bucket with a negative upper bound and a nonzero count proves at least one
+        // negative event was recorded, even if the aggregate sum is non-negative. OTLP
+        // requires sum to be omitted in that case (metrics.proto: sum should only be
+        // filled out when measuring non-negative events).
+        let has_negative_bucket = buckets
+            .iter()
+            .any(|bucket| bucket.upper_limit < 0.0 && bucket.count > 0);
+        let sum = if has_negative_bucket { None } else { sum };
 
         let mut bucket_counts: Vec<u64> = buckets.iter().map(|bucket| bucket.count).collect();
         let has_inf_bucket = buckets
@@ -701,9 +746,9 @@ impl OTLPDataConverter {
             )
             .into());
         }
-        if let Some(quantile) = quantiles.iter().find(|q| q.value < 0.0) {
+        if let Some(quantile) = quantiles.iter().find(|q| q.value.is_nan() || q.value < 0.0) {
             return Err(format!(
-                "summary quantile value {} must not be negative",
+                "summary quantile value {} must not be negative or NaN",
                 quantile.value
             )
             .into());
@@ -715,7 +760,12 @@ impl OTLPDataConverter {
             quantiles.iter().map(|quantile| quantile.quantile),
             "summary quantile",
         )?;
-        let sum = reject_invalid_sum(count, sum, "summary")?;
+
+        let sum =
+            reject_invalid_sum(count, sum, "summary")?.ok_or_else(|| -> vector_common::Error {
+                "summary sum must not be negative; the OTLP summary sum field cannot be omitted"
+                    .into()
+            })?;
 
         let quantile_values = quantiles
             .iter()
@@ -731,7 +781,7 @@ impl OTLPDataConverter {
                 start_time_unix_nano: 0,
                 time_unix_nano: self.timestamp_ns,
                 count: *count,
-                sum: sum.unwrap_or_default(),
+                sum,
                 quantile_values,
                 flags: 0,
             }],
@@ -751,20 +801,21 @@ fn metric_value_to_data(
 pub fn metric_event_to_export_request(
     metric: &MetricEvent,
 ) -> Result<ExportMetricsServiceRequest, vector_common::Error> {
-    let (timestamp_ns, start_time_ns): (u64, u64) = match metric.timestamp() {
+    use std::ops::Add;
+    let (start_time_ns, timestamp_ns): (u64, u64) = match metric.timestamp() {
         Some(timestamp) => {
             if let Some(timestamp_nanos) = timestamp.timestamp_nanos_opt() {
                 let timestamp_ns = u64::try_from(timestamp_nanos).map_err(|_| -> vector_common::Error {
                     format!("metric timestamp {timestamp_nanos} is before the Unix epoch and cannot be encoded as an OTLP nanosecond timestamp").into()
                 })?;
 
-                let start_time_ns = match (metric.kind(), metric.interval_ms()) {
-                    (MetricKind::Incremental, Some(interval)) => {
-                        timestamp_ns.saturating_sub(u64::from(interval.get()) * 1_000_000)
-                    }
-                    _ => 0,
-                };
-                (timestamp_ns, start_time_ns)
+                match (metric.kind(), metric.interval_ms()) {
+                    (MetricKind::Incremental, Some(interval)) => (
+                        timestamp_ns,
+                        timestamp_ns.add(u64::from(interval.get()) * 1_000_000),
+                    ),
+                    _ => (0, timestamp_ns),
+                }
             } else {
                 (0, 0)
             }
@@ -882,7 +933,7 @@ mod tests {
             }
         };
 
-        // Delta (Incremental) with an interval derives the aggregation window start.
+        // Delta (Incremental) with an interval derives the aggregation window end.
         let point = sum_point(
             MetricEvent::new(
                 "requests",
@@ -892,8 +943,8 @@ mod tests {
             .with_timestamp(Some(Utc.timestamp_nanos(time_ns)))
             .with_interval_ms(NonZeroU32::new(10)),
         );
-        assert_eq!(point.time_unix_nano, time_ns as u64);
-        assert_eq!(point.start_time_unix_nano, (time_ns - interval_ns) as u64);
+        assert_eq!(point.start_time_unix_nano, time_ns as u64);
+        assert_eq!(point.time_unix_nano, (time_ns + interval_ns) as u64);
 
         // Cumulative (Absolute) must NOT derive a start time even if an interval is present.
         let point = sum_point(
@@ -929,6 +980,262 @@ mod tests {
             MetricValue::Counter { value: 1.0 },
         )
         .with_timestamp(Some(Utc.timestamp_nanos(-1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn nan_counter_value_is_rejected() {
+        let metric = MetricEvent::new(
+            "requests",
+            MetricKind::Incremental,
+            MetricValue::Counter { value: f64::NAN },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn nan_gauge_value_is_rejected() {
+        let metric = MetricEvent::new(
+            "requests",
+            MetricKind::Absolute,
+            MetricValue::Gauge { value: f64::NAN },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn nan_histogram_bucket_bound_is_rejected() {
+        // A single NaN bound among several otherwise-valid buckets must still be caught.
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets: vec![
+                    Bucket {
+                        upper_limit: 1.0,
+                        count: 1,
+                    },
+                    Bucket {
+                        upper_limit: f64::NAN,
+                        count: 1,
+                    },
+                    Bucket {
+                        upper_limit: 5.0,
+                        count: 1,
+                    },
+                    Bucket {
+                        upper_limit: f64::INFINITY,
+                        count: 1,
+                    },
+                ],
+                count: 4,
+                sum: 10.0,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn negative_bucket_with_nonzero_count_omits_histogram_sum() {
+        // A bucket with a negative upper bound and a nonzero count proves a negative
+        // event was recorded, even though the aggregate sum here is positive. OTLP
+        // requires sum to be omitted in that case rather than emitted as-is.
+        let buckets = vec![
+            Bucket {
+                upper_limit: -5.0,
+                count: 1,
+            },
+            Bucket {
+                upper_limit: 1.0,
+                count: 0,
+            },
+            Bucket {
+                upper_limit: f64::INFINITY,
+                count: 3,
+            },
+        ];
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count: 4,
+                sum: 10.0,
+            },
+        );
+
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
+        match data {
+            Data::Histogram(histogram) => {
+                let point = histogram.data_points.into_iter().next().unwrap();
+                assert_eq!(point.sum, None);
+            }
+            other => panic!("expected Data::Histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negative_bucket_with_zero_count_keeps_histogram_sum() {
+        // A negative bound with a zero count does not prove any negative event was
+        // recorded, so the aggregate sum must still be emitted.
+        let buckets = vec![
+            Bucket {
+                upper_limit: -5.0,
+                count: 0,
+            },
+            Bucket {
+                upper_limit: 1.0,
+                count: 1,
+            },
+            Bucket {
+                upper_limit: f64::INFINITY,
+                count: 3,
+            },
+        ];
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets,
+                count: 4,
+                sum: 10.0,
+            },
+        );
+
+        let data = metric_value_to_data(metric.value(), metric.kind(), 42, 0, Vec::new()).unwrap();
+        match data {
+            Data::Histogram(histogram) => {
+                let point = histogram.data_points.into_iter().next().unwrap();
+                assert_eq!(point.sum, Some(10.0));
+            }
+            other => panic!("expected Data::Histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nan_histogram_sum_is_rejected() {
+        // A NaN sum must be rejected even when multiple valid buckets are present.
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedHistogram {
+                buckets: vec![
+                    Bucket {
+                        upper_limit: 1.0,
+                        count: 1,
+                    },
+                    Bucket {
+                        upper_limit: 5.0,
+                        count: 1,
+                    },
+                    Bucket {
+                        upper_limit: f64::INFINITY,
+                        count: 1,
+                    },
+                ],
+                count: 3,
+                sum: f64::NAN,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn nan_summary_sum_is_rejected() {
+        // A NaN sum must be rejected even when multiple valid quantiles are present.
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedSummary {
+                quantiles: vec![
+                    Quantile {
+                        quantile: 0.5,
+                        value: 1.0,
+                    },
+                    Quantile {
+                        quantile: 0.9,
+                        value: 2.0,
+                    },
+                    Quantile {
+                        quantile: 0.99,
+                        value: 3.0,
+                    },
+                ],
+                count: 3,
+                sum: f64::NAN,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn negative_summary_sum_is_rejected() {
+        // Unlike histogram's optional sum, OTLP summary's sum field cannot be omitted,
+        // so a negative sum must be rejected
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedSummary {
+                quantiles: vec![
+                    Quantile {
+                        quantile: 0.5,
+                        value: 1.0,
+                    },
+                    Quantile {
+                        quantile: 0.9,
+                        value: 2.0,
+                    },
+                    Quantile {
+                        quantile: 0.99,
+                        value: 3.0,
+                    },
+                ],
+                count: 3,
+                sum: -1.0,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
+
+        assert!(metric_event_to_export_request(&metric).is_err());
+    }
+
+    #[test]
+    fn nan_summary_quantile_value_is_rejected() {
+        // A single NaN quantile value among several otherwise-valid quantiles must still be caught.
+        let metric = MetricEvent::new(
+            "latency",
+            MetricKind::Absolute,
+            MetricValue::AggregatedSummary {
+                quantiles: vec![
+                    Quantile {
+                        quantile: 0.5,
+                        value: 1.0,
+                    },
+                    Quantile {
+                        quantile: 0.9,
+                        value: f64::NAN,
+                    },
+                    Quantile {
+                        quantile: 0.99,
+                        value: 3.0,
+                    },
+                ],
+                count: 3,
+                sum: 6.0,
+            },
+        )
+        .with_timestamp(Some(Utc.timestamp_nanos(1_000)));
 
         assert!(metric_event_to_export_request(&metric).is_err());
     }
