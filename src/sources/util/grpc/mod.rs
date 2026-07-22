@@ -118,7 +118,11 @@ impl GrpcKeepaliveConfig {
 }
 
 fn jittered_duration(duration: Duration, jitter_factor: f64, jitter: f64) -> Duration {
-    duration.mul_f64(1.0 + jitter_factor.clamp(0.0, 1.0) * jitter.clamp(-1.0, 1.0))
+    let multiplier = 1.0 + jitter_factor.clamp(0.0, 1.0) * jitter.clamp(-1.0, 1.0);
+
+    Duration::try_from_secs_f64(duration.as_secs_f64() * multiplier)
+        .unwrap_or(Duration::MAX)
+        .max(Duration::from_secs(1))
 }
 
 struct MaxConnectionAgeIo {
@@ -526,6 +530,26 @@ mod tests {
         assert_eq!(
             jittered_duration(duration, 0.2, 1.0),
             Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn connection_age_jitter_saturates_on_overflow() {
+        assert_eq!(
+            jittered_duration(Duration::from_secs(u64::MAX), 1.0, 1.0),
+            Duration::MAX
+        );
+    }
+
+    #[test]
+    fn connection_age_jitter_has_one_second_minimum() {
+        assert_eq!(
+            jittered_duration(Duration::from_secs(1), 1.0, -1.0),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            jittered_duration(Duration::ZERO, 0.0, 0.0),
+            Duration::from_secs(1)
         );
     }
 
