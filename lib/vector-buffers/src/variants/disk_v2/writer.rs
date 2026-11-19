@@ -376,6 +376,7 @@ impl<W: AsyncWrite + Unpin> TrackingBufWriter<W> {
         // If the given buffer is too large to be buffered at all, then bypass the internal buffer.
         if buf.len() >= self.buf.capacity() {
             self.inner.write_all(buf).await?;
+            self.inner.flush().await?;
 
             let flush_result = flush_result.get_or_insert(FlushResult::default());
             flush_result.events_flushed += event_count as u64;
@@ -409,7 +410,13 @@ impl<W: AsyncWrite + Unpin> TrackingBufWriter<W> {
         let events_flushed = self.unflushed_events as u64;
         let bytes_flushed = self.buf.len() as u64;
 
-        let result = self.inner.write_all(&self.buf[..]).await;
+        // Tokio File can queue write_all on a blocking thread. Wait for the bytes to
+        // be readable before the caller publishes progress and wakes the reader.
+        let result = async {
+            self.inner.write_all(&self.buf).await?;
+            self.inner.flush().await
+        }
+        .await;
         self.unflushed_events = 0;
         self.buf.clear();
 
@@ -2002,5 +2009,37 @@ where
 {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::BufWriter;
+
+    use super::TrackingBufWriter;
+
+    #[tokio::test]
+    async fn flush_makes_buffered_write_visible() {
+        let inner = BufWriter::with_capacity(64, Vec::new());
+        let mut writer = TrackingBufWriter::with_capacity(8, inner);
+
+        assert!(writer.write(1, b"small").await.unwrap().is_none());
+        let flushed = writer.flush().await.unwrap().unwrap();
+
+        assert_eq!(flushed.events_flushed, 1);
+        assert_eq!(flushed.bytes_flushed, 5);
+        assert_eq!(writer.get_ref().get_ref(), b"small");
+    }
+
+    #[tokio::test]
+    async fn oversized_write_is_visible_when_reported_flushed() {
+        let inner = BufWriter::with_capacity(64, Vec::new());
+        let mut writer = TrackingBufWriter::with_capacity(8, inner);
+
+        let flushed = writer.write(1, b"oversized").await.unwrap().unwrap();
+
+        assert_eq!(flushed.events_flushed, 1);
+        assert_eq!(flushed.bytes_flushed, 9);
+        assert_eq!(writer.get_ref().get_ref(), b"oversized");
     }
 }
